@@ -1,0 +1,142 @@
+<Window x:Class="Strofas.Editor.EditorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Strofas — редактор меню"
+        Width="1100"
+        Height="680"
+        MinWidth="900"
+        MinHeight="560"
+        WindowStartupLocation="CenterScreen"
+        Background="#FF1E1E26">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Панель инструментов -->
+        <DockPanel Grid.Row="0" Margin="10,10,10,8">
+            <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                <Button x:Name="AddLeafButton" Content="+ Пункт" Padding="10,4" Margin="0,0,6,0" Click="OnAddLeaf" />
+                <Button x:Name="AddCategoryButton" Content="+ Категория" Padding="10,4" Margin="0,0,12,0" Click="OnAddCategory" />
+                <Button Content="↑" Width="30" Padding="0,4" Margin="0,0,4,0" Click="OnMoveUp" />
+                <Button Content="↓" Width="30" Padding="0,4" Margin="0,0,12,0" Click="OnMoveDown" />
+                <Button Content="Удалить" Padding="10,4" Margin="0,0,16,0" Click="OnDelete" />
+                <TextBlock Text="Горячка:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="#FFB8B8C8" />
+                <TextBox x:Name="HotkeyBox" Width="110" Padding="4,3" VerticalAlignment="Center" Margin="0,0,14,0" />
+                <TextBlock Text="Размер:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="#FFB8B8C8" />
+                <TextBox x:Name="SizeBox" Width="54" Padding="4,3" VerticalAlignment="Center" Margin="0,0,14,0" />
+                <CheckBox x:Name="CloseAfterBox" Content="Закрывать после действия"
+                          VerticalAlignment="Center" Margin="0,0,4,0" Foreground="#FFB8B8C8" />
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Сохранить" Padding="14,4" Margin="0,0,8,0" FontWeight="SemiBold" Click="OnSave" />
+                <Button Content="Закрыть" Padding="14,4" Click="OnClose" />
+            </StackPanel>
+        </DockPanel>
+
+        <!-- Тело: дерево | предпросмотр | свойства -->
+        <Grid Grid.Row="1" Margin="10,0,10,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="280" MinWidth="200" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="300" MinWidth="240" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Дерево меню -->
+            <Border Grid.Column="0" Background="#FF26262F" CornerRadius="6" Margin="0,0,8,0" Padding="6">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="Структура меню" FontWeight="SemiBold"
+                               Foreground="#FFB8B8C8" Margin="4,2,4,6" />
+                    <TreeView x:Name="Tree" Background="Transparent" BorderThickness="0"
+                              Foreground="#FFE8E8F0" SelectedItemChanged="OnTreeSelected">
+                        <TreeView.ItemContainerStyle>
+                            <Style TargetType="TreeViewItem">
+                                <Setter Property="Foreground" Value="#FFE8E8F0" />
+                                <Setter Property="FontSize" Value="13" />
+                            </Style>
+                        </TreeView.ItemContainerStyle>
+                    </TreeView>
+                </DockPanel>
+            </Border>
+
+            <!-- Предпросмотр -->
+            <Border Grid.Column="1" Background="#FF26262F" CornerRadius="6" Margin="0,0,8,0">
+                <Grid>
+                    <TextBlock Text="Предпросмотр" FontWeight="SemiBold" Foreground="#FFB8B8C8"
+                               HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12,8" />
+                    <Canvas x:Name="PreviewCanvas" Width="480" Height="480"
+                            HorizontalAlignment="Center" VerticalAlignment="Center"
+                            Background="Transparent"
+                            MouseMove="OnPreviewMouseMove" MouseLeave="OnPreviewMouseLeave" />
+                </Grid>
+            </Border>
+
+            <!-- Свойства -->
+            <Border Grid.Column="2" Background="#FF26262F" CornerRadius="6" Padding="10">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="Свойства пункта" FontWeight="SemiBold"
+                               Foreground="#FFB8B8C8" Margin="2,0,2,8" />
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Text="Название" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
+                            <TextBox x:Name="LabelBox" Padding="5,4" Margin="0,0,0,10" TextChanged="OnFieldChanged" />
+
+                            <TextBlock Text="Иконка (ico / png / exe)" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
+                            <DockPanel Margin="0,0,0,10">
+                                <Button DockPanel.Dock="Right" Content="…" Width="30" Padding="0,4" Margin="6,0,0,0"
+                                        Click="OnBrowseIcon" />
+                                <TextBox x:Name="IconBox" Padding="5,4" TextChanged="OnFieldChanged" />
+                            </DockPanel>
+
+                            <TextBlock Text="Тип действия" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
+                            <ComboBox x:Name="ActionTypeBox" Padding="5,4" Margin="0,0,0,10"
+                                      SelectionChanged="OnFieldChanged">
+                                <ComboBoxItem Content="launch — запуск" Tag="launch" />
+                                <ComboBoxItem Content="stop — остановить" Tag="stop" />
+                                <ComboBoxItem Content="toggle — запуск/остановка" Tag="toggle" />
+                                <ComboBoxItem Content="(нет действия)" Tag="" />
+                            </ComboBox>
+
+                            <TextBlock Text="Путь (exe / файл / папка / URL)" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
+                            <DockPanel Margin="0,0,0,10">
+                                <Button DockPanel.Dock="Right" Content="…" Width="30" Padding="0,4" Margin="6,0,0,0"
+                                        Click="OnBrowsePath" />
+                                <TextBox x:Name="PathBox" Padding="5,4" TextChanged="OnFieldChanged" />
+                            </DockPanel>
+
+                            <TextBlock Text="Аргументы" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
+                            <TextBox x:Name="ArgsBox" Padding="5,4" Margin="0,0,0,10" TextChanged="OnFieldChanged" />
+
+                            <TextBlock Text="Рабочая папка" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
+                            <DockPanel Margin="0,0,0,10">
+                                <Button DockPanel.Dock="Right" Content="…" Width="30" Padding="0,4" Margin="6,0,0,0"
+                                        Click="OnBrowseWorkDir" />
+                                <TextBox x:Name="WorkDirBox" Padding="5,4" TextChanged="OnFieldChanged" />
+                            </DockPanel>
+
+                            <TextBlock Text="Имя процесса (для stop / toggle)" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
+                            <TextBox x:Name="ProcessBox" Padding="5,4" Margin="0,0,0,10" TextChanged="OnFieldChanged" />
+
+                            <CheckBox x:Name="HiddenBox" Content="Запускать скрытым окном"
+                                      Foreground="#FFB8B8C8" Margin="0,0,0,4"
+                                      Checked="OnFieldChanged" Unchecked="OnFieldChanged" />
+
+                            <TextBlock x:Name="HintText" Foreground="#FF7A7A90" FontSize="11"
+                                       TextWrapping="Wrap" Margin="0,8,0,0"
+                                       Text="Для категории поля действия игнорируются: в меню она открывает вложенный круг." />
+                        </StackPanel>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+        </Grid>
+
+        <!-- Статус -->
+        <DockPanel Grid.Row="2" Margin="10,0,10,10">
+            <TextBlock x:Name="StatusText" Text="Изменения применяются после «Сохранить»"
+                       Foreground="#FF9A9AB0" />
+        </DockPanel>
+    </Grid>
+</Window>
