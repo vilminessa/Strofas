@@ -20,6 +20,7 @@ public sealed partial class MainWindow : Window
     private const int WM_DWMCOLORIZATIONCOLORCHANGED = 0x0320;
 
     private readonly ActionExecutor _executor;
+    private readonly GithubService _github;
     private MenuConfig _config;
     private RadialMenuRenderer _renderer;
     private double _lastSize;
@@ -36,6 +37,7 @@ public sealed partial class MainWindow : Window
     private Native.POINT _cursorTarget;
     private double _physSize;
     private IntPtr _hwnd;
+    private readonly DispatcherTimer _uiTimer;
 
     /// <summary>Живой фон: перехватываем экран под меню ~50 раз/сек.</summary>
     private void StartBackdropLoop()
@@ -116,11 +118,12 @@ public sealed partial class MainWindow : Window
     private System.Diagnostics.Stopwatch? _backdropSw;
     private CancellationTokenSource? _backdropCts;
 
-    public MainWindow(MenuConfig cfg, ActionExecutor executor)
+    internal MainWindow(MenuConfig cfg, ActionExecutor executor, GithubService github)
     {
         InitializeComponent();
         _config = cfg;
         _executor = executor;
+        _github = github;
         Width = Height = cfg.MenuSize;
         _lastSize = cfg.MenuSize;
 
@@ -130,7 +133,8 @@ public sealed partial class MainWindow : Window
         // (STROFAS_NO_EXCLUDE=1 — временно для скриншотов при отладке)
         if (Environment.GetEnvironmentVariable("STROFAS_NO_EXCLUDE") != "1")
             Dwm.ExcludeFromCapture(_hwnd);
-        _renderer = new RadialMenuRenderer(MenuCanvas, cfg.MenuSize, cfg.MaxItemsPerRing, IsRunning);
+        _renderer = new RadialMenuRenderer(MenuCanvas, cfg.MenuSize, cfg.MaxItemsPerRing, IsRunning,
+            vm => _github.GetVisual(vm.Config));
 
         LoadRootItems();
 
@@ -143,6 +147,34 @@ public sealed partial class MainWindow : Window
 
         ThemeTokens.Changed += OnAccentChanged;
         HwndSource.FromHwnd(hwnd)?.AddHook(WndProc);
+
+        _github.StateChanged += OnGithubStateChanged;
+        _github.Finished += OnGithubFinished;
+
+        // опрос процентов скачивания — хаб показывает прогресс живьём
+        _uiTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        _uiTimer.Tick += (_, _) => { if (IsVisible) UpdateFromPointer(); };
+        _uiTimer.Start();
+    }
+
+    private void OnGithubStateChanged()
+    {
+        if (!IsVisible) return;
+        _renderer.Rebuild();
+        UpdateFromPointer();
+    }
+
+    private void OnGithubFinished(string id, bool ok, string message)
+    {
+        Log.Info($"github[{id}]: {(ok ? "ok" : "ошибка")} {message}");
+        if (!IsVisible) return;
+        if (ok && _config.CloseAfterAction)
+        {
+            HideMenu();
+            return;
+        }
+        _renderer.Rebuild();
+        UpdateFromPointer();
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -177,7 +209,8 @@ public sealed partial class MainWindow : Window
         if (Math.Abs(cfg.MenuSize - _lastSize) > 0.5)
         {
             _lastSize = cfg.MenuSize;
-            _renderer = new RadialMenuRenderer(MenuCanvas, cfg.MenuSize, cfg.MaxItemsPerRing, IsRunning);
+            _renderer = new RadialMenuRenderer(MenuCanvas, cfg.MenuSize, cfg.MaxItemsPerRing, IsRunning,
+                vm => _github.GetVisual(vm.Config));
         }
         else
         {
@@ -224,6 +257,9 @@ public sealed partial class MainWindow : Window
         AnimateOpen();
         _renderer.PlayOpenAnimation();
         UpdateFromPointer();
+
+        // фоновые проверки github-обновлений (без квоты API) + применение staged
+        _github.OnMenuOpening(_config.Items);
     }
 
     public void HideMenu()
@@ -375,13 +411,21 @@ public sealed partial class MainWindow : Window
         }
 
         _renderer.SetHover(hit);
-        _renderer.SetCenter(CenterMain(hit), CenterHint(), Breadcrumb());
+        _renderer.SetCenter(CenterMain(hit), CenterHint(), CrumbFor(hit));
     }
 
     private string CenterMain(in MenuHit hit)
     {
+        if (hit.Zone == PressZone.Update) return "Обновить";
         var item = HitItem(hit);
         return item is null ? "Strofas" : item.Config.Label;
+    }
+
+    /// <summary>Статус github-пункта в верхней строке хаба, иначе — breadcrumb пути.</summary>
+    private string? CrumbFor(in MenuHit hit)
+    {
+        var status = _github.GetStatusText(HitItem(hit)?.Config, hit.Zone);
+        return status ?? Breadcrumb();
     }
 
     private string CenterHint() => _chain.Count > 0 ? "Назад" : "Закрыть";
@@ -439,7 +483,7 @@ public sealed partial class MainWindow : Window
             {
                 var item = _rootItems[hit.Index];
                 if (item.Config.IsCategory) JumpToCategory(item);
-                else Execute(item);
+                else Execute(item, hit.Zone);
                 break;
             }
 
@@ -449,7 +493,7 @@ public sealed partial class MainWindow : Window
                 if (inner is null || hit.Index >= inner.Count) break;
                 var item = inner[hit.Index];
                 if (item.Config.IsCategory) EnterCategory(item);
-                else Execute(item);
+                else Execute(item, hit.Zone);
                 break;
             }
 
@@ -611,7 +655,7 @@ public sealed partial class MainWindow : Window
 
     // ---------- Выполнение ----------
 
-    private void Execute(MenuItemVm item)
+    private void Execute(MenuItemVm item, PressZone zone)
     {
         if (item.Config.Action is null)
         {
@@ -619,8 +663,11 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        _executor.Execute(item.Id, item.Config);
+        _executor.Execute(item.Id, item.Config, zone);
         _selection = -1;
+
+        // github-пункты закрывают меню по Finished (установка/обновление асинхронны)
+        if (item.Config.Action.IsGithub) return;
 
         if (_config.CloseAfterAction)
         {

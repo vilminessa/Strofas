@@ -40,7 +40,9 @@ public partial class App : Application
         _executor = new ActionExecutor();
         var cfg = ConfigService.Load();
         ThemeTokens.Apply(cfg.Accent);
-        _menu = new MainWindow(cfg, _executor);
+        var github = new GithubService(_executor);
+        _executor.AttachGithub(github);
+        _menu = new MainWindow(cfg, _executor, github);
 
         _hotkey = new HotkeyService();
         if (!_hotkey.Register(cfg.Hotkey))

@@ -75,6 +75,7 @@ internal static class ConfigService
         if (cfg.MenuSize is < 400 or > 1200) cfg.MenuSize = 640;
         if (cfg.MaxItemsPerRing is < 4 or > 16) cfg.MaxItemsPerRing = 10;
         if (string.IsNullOrWhiteSpace(cfg.Accent)) cfg.Accent = "auto";
+        cfg.GithubToken ??= "";
         cfg.Items ??= new List<MenuItemConfig>();
     }
 

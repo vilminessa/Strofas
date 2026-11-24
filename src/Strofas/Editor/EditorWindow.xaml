@@ -97,11 +97,12 @@
                                 <ComboBoxItem Content="launch — запуск" Tag="launch" />
                                 <ComboBoxItem Content="stop — остановить" Tag="stop" />
                                 <ComboBoxItem Content="toggle — запуск/остановка" Tag="toggle" />
+                                <ComboBoxItem Content="github — обновление из релизов" Tag="github" />
                                 <ComboBoxItem Content="(нет действия)" Tag="" />
                             </ComboBox>
 
-                            <TextBlock Text="Путь (exe / файл / папка / URL)" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
-                            <DockPanel Margin="0,0,0,10">
+                            <TextBlock x:Name="PathRow" Text="Путь (exe / файл / папка / URL)" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
+                            <DockPanel x:Name="PathBoxRow" Margin="0,0,0,10">
                                 <Button DockPanel.Dock="Right" Content="…" Width="30" Padding="0,4" Margin="6,0,0,0"
                                         Click="OnBrowsePath" />
                                 <TextBox x:Name="PathBox" Padding="5,4" TextChanged="OnFieldChanged" />
@@ -110,8 +111,8 @@
                             <TextBlock Text="Аргументы" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
                             <TextBox x:Name="ArgsBox" Padding="5,4" Margin="0,0,0,10" TextChanged="OnFieldChanged" />
 
-                            <TextBlock Text="Рабочая папка" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
-                            <DockPanel Margin="0,0,0,10">
+                            <TextBlock x:Name="WorkDirRow" Text="Рабочая папка" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
+                            <DockPanel x:Name="WorkDirBoxRow" Margin="0,0,0,10">
                                 <Button DockPanel.Dock="Right" Content="…" Width="30" Padding="0,4" Margin="6,0,0,0"
                                         Click="OnBrowseWorkDir" />
                                 <TextBox x:Name="WorkDirBox" Padding="5,4" TextChanged="OnFieldChanged" />
@@ -123,6 +124,34 @@
                             <CheckBox x:Name="HiddenBox" Content="Запускать скрытым окном"
                                       Foreground="#FFB8B8C8" Margin="0,0,0,4"
                                       Checked="OnFieldChanged" Unchecked="OnFieldChanged" />
+
+                            <!-- github-приложения -->
+                            <StackPanel x:Name="GithubPanel" Visibility="Collapsed">
+                                <TextBlock Text="Репозиторий (owner/repo или ссылка на releases)"
+                                           Foreground="#FF9A9AB0" Margin="0,8,0,3" />
+                                <DockPanel Margin="0,0,0,10">
+                                    <Button DockPanel.Dock="Right" x:Name="CheckButton" Content="Проверить"
+                                            Padding="8,4" Margin="6,0,0,0" Click="OnCheckRepo" />
+                                    <TextBox x:Name="RepoBox" Padding="5,4" TextChanged="OnFieldChanged" />
+                                </DockPanel>
+
+                                <TextBlock Text="Тег (latest или v1.2.3)" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
+                                <TextBox x:Name="TagBox" Padding="5,4" Margin="0,0,0,10" TextChanged="OnFieldChanged" />
+
+                                <TextBlock Text="Ассет — exe в релизе" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
+                                <ComboBox x:Name="AssetBox" IsEditable="True" Padding="5,4" Margin="0,0,0,10"
+                                          SelectionChanged="OnFieldChanged" LostFocus="OnFieldChanged" />
+
+                                <CheckBox x:Name="AutoUpdateBox" Content="Авто-обновление при открытии меню"
+                                          Foreground="#FFB8B8C8" Margin="0,0,0,6"
+                                          Checked="OnFieldChanged" Unchecked="OnFieldChanged" />
+
+                                <TextBlock Text="sha256 ассета (опционально)" Foreground="#FF9A9AB0" Margin="0,0,0,3" />
+                                <TextBox x:Name="ShaBox" Padding="5,4" Margin="0,0,0,8" TextChanged="OnFieldChanged" />
+
+                                <TextBlock Foreground="#FF7A7A90" FontSize="11" TextWrapping="Wrap"
+                                           Text="«Проверить» подставит последний тег и список ассетов. Ссылка вида https://github.com/owner/repo/releases распознаётся автоматически." />
+                            </StackPanel>
 
                             <TextBlock x:Name="HintText" Foreground="#FF7A7A90" FontSize="11"
                                        TextWrapping="Wrap" Margin="0,8,0,0"

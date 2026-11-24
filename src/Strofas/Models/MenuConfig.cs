@@ -18,6 +18,9 @@ public sealed class MenuConfig
     /// <summary>"auto" — акцент из темы Windows, либо явный hex вида "#5B9DFF".</summary>
     public string Accent { get; set; } = "auto";
 
+    /// <summary>Опциональный токен GitHub для API (список ассетов в редаторе).</summary>
+    public string GithubToken { get; set; } = "";
+
     public List<MenuItemConfig> Items { get; set; } = new();
 }
 
@@ -58,4 +61,23 @@ public sealed class ActionConfig
     public bool Hidden { get; set; }
 
     public bool IsStopLike => Type is "stop" or "toggle";
+
+    // ---------- github-приложения (type = "github") ----------
+
+    /// <summary>Репозиторий: "owner/repo" или ссылка https://github.com/owner/repo/releases.</summary>
+    public string? Repo { get; set; }
+
+    /// <summary>Имя ассета- exe в релизе (указывается точно; в редакторе — выпадающий список).</summary>
+    public string? Asset { get; set; }
+
+    /// <summary>"latest" (по умолчанию) или конкретный тег, например "v1.2.3".</summary>
+    public string? Tag { get; set; } = "latest";
+
+    /// <summary>Фоновое авто-обновление при открытии меню (по умолчанию включено).</summary>
+    public bool AutoUpdate { get; set; } = true;
+
+    /// <summary>Опциональный sha256 ожидаемого ассета — сверяется после скачки.</summary>
+    public string? Sha256 { get; set; }
+
+    public bool IsGithub => Type == "github";
 }

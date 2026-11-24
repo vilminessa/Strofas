@@ -107,7 +107,25 @@ public sealed partial class EditorWindow : Window
         WorkDirBox.Text = it?.Action?.WorkingDir ?? "";
         ProcessBox.Text = it?.Action?.ProcessName ?? "";
         HiddenBox.IsChecked = it?.Action?.Hidden ?? false;
+        RepoBox.Text = it?.Action?.Repo ?? "";
+        TagBox.Text = string.IsNullOrWhiteSpace(it?.Action?.Tag) ? "latest" : it!.Action!.Tag!;
+        AssetBox.Text = it?.Action?.Asset ?? "";
+        AutoUpdateBox.IsChecked = it?.Action?.AutoUpdate ?? true;
+        ShaBox.Text = it?.Action?.Sha256 ?? "";
         _loading = false;
+        UpdateTypeVisibility();
+    }
+
+    /// <summary>Поля пути скрываются для github-пунктов (и наоборот).</summary>
+    private void UpdateTypeVisibility()
+    {
+        var isGithub = (ActionTypeBox.SelectedItem as ComboBoxItem)?.Tag as string == "github";
+        var visible = isGithub ? Visibility.Collapsed : Visibility.Visible;
+        PathRow.Visibility = visible;
+        PathBoxRow.Visibility = visible;
+        WorkDirRow.Visibility = visible;
+        WorkDirBoxRow.Visibility = visible;
+        GithubPanel.Visibility = isGithub ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void SelectActionType(string type)
@@ -125,6 +143,9 @@ public sealed partial class EditorWindow : Window
 
     private void OnFieldChanged(object sender, EventArgs e)
     {
+        if (ReferenceEquals(sender, ActionTypeBox))
+            UpdateTypeVisibility();
+
         if (_loading || _selected is null) return;
 
         var it = _selected;
@@ -145,12 +166,64 @@ public sealed partial class EditorWindow : Window
             it.Action.WorkingDir = NullIfEmpty(WorkDirBox.Text);
             it.Action.ProcessName = NullIfEmpty(ProcessBox.Text);
             it.Action.Hidden = HiddenBox.IsChecked == true;
+
+            // github
+            it.Action.Repo = NullIfEmpty(RepoBox.Text);
+            it.Action.Tag = string.IsNullOrWhiteSpace(TagBox.Text) ? "latest" : TagBox.Text.Trim();
+            it.Action.Asset = NullIfEmpty(AssetBox.Text);
+            it.Action.AutoUpdate = AutoUpdateBox.IsChecked ?? true;
+            it.Action.Sha256 = NullIfEmpty(ShaBox.Text);
         }
 
         if (Tree.SelectedItem is TreeViewItem node)
             node.Header = HeaderFor(it);
 
         RefreshPreview();
+    }
+
+    /// <summary>«Проверить»: парсим ссылку, тянем последний тег и список ассетов.</summary>
+    private async void OnCheckRepo(object sender, RoutedEventArgs e)
+    {
+        if (!GitHubRelease.TryParseRepo(RepoBox.Text, out var repo))
+        {
+            StatusText.Text = "Ссылка не распознана: нужен owner/repo или https://github.com/owner/repo/releases";
+            return;
+        }
+
+        CheckButton.IsEnabled = false;
+        StatusText.Text = "Проверяю релизы…";
+        try
+        {
+            var tag = await GitHubRelease.GetLatestTagAsync(repo, CancellationToken.None)
+                ?? throw new InvalidOperationException("у репозитория нет релизов");
+            var assets = await GitHubRelease.GetAssetsAsync(repo, "latest", CancellationToken.None);
+
+            RepoBox.Text = repo; // нормализуем к owner/repo
+            TagBox.Text = tag;
+            AssetBox.ItemsSource = assets.Select(a => a.Name).ToList();
+
+            // подсказка: если exe в релизе ровно один — подставляем
+            var exes = assets
+                .Where(a => a.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                .Select(a => a.Name)
+                .ToList();
+            if (string.IsNullOrWhiteSpace(AssetBox.Text))
+            {
+                if (exes.Count == 1) AssetBox.Text = exes[0];
+                else if (assets.Count == 1) AssetBox.Text = assets[0].Name;
+            }
+
+            StatusText.Text = $"последний тег {tag} · ассетов: {assets.Count} — выберите exe и «Сохранить»";
+            OnFieldChanged(AssetBox, EventArgs.Empty);
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = "Ошибка проверки: " + ex.Message;
+        }
+        finally
+        {
+            CheckButton.IsEnabled = true;
+        }
     }
 
     private static string? NullIfEmpty(string s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();

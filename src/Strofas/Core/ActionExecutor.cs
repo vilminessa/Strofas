@@ -4,14 +4,19 @@ using Strofas.Models;
 namespace Strofas.Core;
 
 /// <summary>
-/// Выполнение действий пунктов меню: запуск, остановка, toggle.
+/// Выполнение действий пунктов меню: запуск, остановка, toggle, github-обновления.
 /// PID запущенного из меню отслеживаются — «стоп» сначала бьёт по ним.
 /// </summary>
 public sealed class ActionExecutor
 {
     private readonly Dictionary<string, int> _pids = new();
+    private readonly AppInstaller _installer = new();
+    private GithubService? _github;
 
-    public void Execute(string id, MenuItemConfig item)
+    /// <summary>Связка с github-сервисом (взаимная: сервис зовёт LaunchPath).</summary>
+    internal void AttachGithub(GithubService github) => _github = github;
+
+    internal void Execute(string id, MenuItemConfig item, PressZone zone = PressZone.Launch)
     {
         var a = item.Action;
         if (a is null)
@@ -24,18 +29,63 @@ public sealed class ActionExecutor
         {
             case "launch":
             case "open":
-                Launch(id, a, item.Label);
+                LaunchPath(a.Path, item, id);
                 break;
             case "stop":
                 Stop(id, a, item.Label);
                 break;
             case "toggle":
                 if (IsRunning(id, item)) Stop(id, a, item.Label);
-                else Launch(id, a, item.Label);
+                else LaunchPath(a.Path, item, id);
+                break;
+            case "github":
+                if (_github is null) Log.Warn("GithubService не подключён");
+                else _github.Execute(id, item, zone);
                 break;
             default:
                 Log.Warn($"Неизвестный тип действия '{a.Type}' у пункта '{item.Label}'");
                 break;
+        }
+    }
+
+    /// <summary>Запуск произвольного exe (используется и GithubService).</summary>
+    public bool LaunchPath(string? path, MenuItemConfig item, string id)
+    {
+        var a = item.Action;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            Log.Warn($"Пустой путь запуска у '{item.Label}'");
+            return false;
+        }
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = Environment.ExpandEnvironmentVariables(path.Trim()),
+            Arguments = a?.Args ?? "",
+            UseShellExecute = true,
+        };
+        if (!string.IsNullOrWhiteSpace(a?.WorkingDir))
+            psi.WorkingDirectory = Environment.ExpandEnvironmentVariables(a.WorkingDir);
+        if (a?.Hidden == true)
+            psi.WindowStyle = ProcessWindowStyle.Hidden;
+
+        try
+        {
+            var p = Process.Start(psi);
+            if (p is not null)
+            {
+                try { _pids[id] = p.Id; }
+                catch { /* для URL/документов PID может быть недоступен */ }
+                Log.Info($"Запущено '{item.Label}': {psi.FileName} (pid {p.Id})");
+                return true;
+            }
+            Log.Info($"Запущено '{item.Label}': {psi.FileName}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Не удалось запустить '{item.Label}' ({psi.FileName})", ex);
+            return false;
         }
     }
 
@@ -57,6 +107,16 @@ public sealed class ActionExecutor
         }
 
         var a = item.Action;
+
+        // github-пункты: запущено ли установленное приложение
+        if (a is { IsGithub: true } &&
+            GitHubRelease.TryParseRepo(a.Repo, out var ownerRepo) &&
+            _installer.GetInstalled(ownerRepo, a.Asset ?? "") is not null &&
+            AppInstaller.IsTargetRunning(ownerRepo, a.Asset ?? ""))
+        {
+            return true;
+        }
+
         if (a is not null && !string.IsNullOrWhiteSpace(a.ProcessName))
         {
             // явное имя процесса в конфиге — надёжный признак «запущено»
@@ -73,45 +133,6 @@ public sealed class ActionExecutor
         }
 
         return false;
-    }
-
-    private void Launch(string id, ActionConfig a, string label)
-    {
-        if (string.IsNullOrWhiteSpace(a.Path))
-        {
-            Log.Warn($"Пустой путь запуска у '{label}'");
-            return;
-        }
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = Environment.ExpandEnvironmentVariables(a.Path.Trim()),
-            Arguments = a.Args ?? "",
-            UseShellExecute = true,
-        };
-        if (!string.IsNullOrWhiteSpace(a.WorkingDir))
-            psi.WorkingDirectory = Environment.ExpandEnvironmentVariables(a.WorkingDir);
-        if (a.Hidden)
-            psi.WindowStyle = ProcessWindowStyle.Hidden;
-
-        try
-        {
-            var p = Process.Start(psi);
-            if (p is not null)
-            {
-                try { _pids[id] = p.Id; }
-                catch { /* для URL/документов PID может быть недоступен */ }
-                Log.Info($"Запущено '{label}': {psi.FileName} (pid {p.Id})");
-            }
-            else
-            {
-                Log.Info($"Запущено '{label}': {psi.FileName}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"Не удалось запустить '{label}' ({psi.FileName})", ex);
-        }
     }
 
     private void Stop(string id, ActionConfig a, string label)

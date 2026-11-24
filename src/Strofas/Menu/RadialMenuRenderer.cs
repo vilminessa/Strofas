@@ -26,11 +26,13 @@ internal readonly struct MenuHit
 {
     public HitKind Kind { get; }
     public int Index { get; }
+    public PressZone Zone { get; }
 
-    public MenuHit(HitKind kind, int index = -1)
+    public MenuHit(HitKind kind, int index = -1, PressZone zone = PressZone.Launch)
     {
         Kind = kind;
         Index = index;
+        Zone = zone;
     }
 
     public static readonly MenuHit Miss = new(HitKind.None);
@@ -75,6 +77,7 @@ internal sealed class RadialMenuRenderer
     private readonly double _hubHintY;
     private readonly double _hubDotsY;
     private readonly Func<MenuItemVm, bool> _isRunning;
+    private readonly Func<MenuItemVm, UpdateVisual>? _updateVisual;
 
     private List<MenuItemVm> _rootAll = new();
     private List<MenuItemVm>? _innerAll;
@@ -110,6 +113,14 @@ internal sealed class RadialMenuRenderer
     private Brush _dotOn = null!;
     private Brush _dotOff = null!;
 
+    // зоны обновления на внешней части лепестка
+    private Brush _zoneFill = null!;
+    private Brush _zoneHot = null!;
+    private Brush _zoneStaged = null!;
+    private Brush _zoneStagedHot = null!;
+    private Brush _zoneError = null!;
+    private Brush _zoneErrorHot = null!;
+
     /// <summary>Максимум пунктов на кольцо (страницы).</summary>
     public int MaxItems { get; set; }
 
@@ -130,6 +141,13 @@ internal sealed class RadialMenuRenderer
     {
         public required MenuItemVm Item { get; init; }
         public required WpfPath Path { get; init; }
+
+        /// <summary>Внешняя зона «Обновить» (null — лепесток цельный).</summary>
+        public WpfPath? Path2 { get; init; }
+        public double? SplitR { get; init; }
+        public UpdateVisual Visual { get; init; }
+        public TextBlock? ZoneGlyph { get; init; }
+
         public required ScaleTransform Hover { get; init; }
         public required ScaleTransform EnterScale { get; init; }
         public required RotateTransform EnterRotate { get; init; }
@@ -144,15 +162,18 @@ internal sealed class RadialMenuRenderer
         {
             if (BlurLayer is not null) yield return BlurLayer;
             yield return Path;
+            if (Path2 is not null) yield return Path2;
             if (Label is not null) yield return Label;
             if (Letter is not null) yield return Letter;
             if (Marker is not null) yield return Marker;
             if (Icon is not null) yield return Icon;
             if (Dot is not null) yield return Dot;
+            if (ZoneGlyph is not null) yield return ZoneGlyph;
         }
     }
 
-    public RadialMenuRenderer(Canvas canvas, double size, int maxItems, Func<MenuItemVm, bool> isRunning)
+    public RadialMenuRenderer(Canvas canvas, double size, int maxItems,
+        Func<MenuItemVm, bool> isRunning, Func<MenuItemVm, UpdateVisual>? updateVisual = null)
     {
         _canvas = canvas;
         _size = size;
@@ -160,6 +181,7 @@ internal sealed class RadialMenuRenderer
         _cy = size / 2;
         MaxItems = maxItems;
         _isRunning = isRunning;
+        _updateVisual = updateVisual;
 
         _centerR = size * 0.085;
         _innerMin = size * 0.097;
@@ -260,6 +282,13 @@ internal sealed class RadialMenuRenderer
             },
         });
         _hoverStroke = Freeze(new SolidColorBrush(Color.FromArgb(0xF0, acc.R, acc.G, acc.B)));
+
+        _zoneFill = Solid(0x66, acc.R, acc.G, acc.B);      // есть обновление
+        _zoneHot = Solid(0xE6, acc.R, acc.G, acc.B);
+        _zoneStaged = Solid(0x42, 0xFF, 0xFF, 0xFF);       // скачано, ждёт применения
+        _zoneStagedHot = Solid(0x73, 0xFF, 0xFF, 0xFF);
+        _zoneError = Solid(0x73, 0xE0, 0x52, 0x52);        // ошибка
+        _zoneErrorHot = Solid(0xB3, 0xE0, 0x52, 0x52);
 
         _text = Solid(0xF2, 0xF2, 0xF4, 0xF8);
         _textDim = Solid(0xB3, 0x9A, 0xA0, 0xB4);
@@ -403,8 +432,6 @@ internal sealed class RadialMenuRenderer
         var count = items.Count;
         var step = 360.0 / count;
         var rMid = (rIn + rOut) / 2;
-        var chord = 2 * rMid * Math.Sin(step * Math.PI / 360);
-        var maxLabelW = Math.Max(56.0, chord * 0.72);
         var iconSize = count > 9 ? 18.0 : count > 6 ? 22.0 : 26.0;
         var fontSize = count > 9 ? 11.0 : count > 6 ? 12.0 : 13.0;
 
@@ -414,7 +441,18 @@ internal sealed class RadialMenuRenderer
             var a1 = StartDeg + i * step + GapDeg / 2;
             var a2 = StartDeg + (i + 1) * step - GapDeg / 2;
             var mid = (a1 + a2) / 2;
-            var pos = Polar(rMid, mid);
+
+            // github-пункт с обновлением: лепесток делится на две зоны —
+            // внутренняя «Запустить», внешняя «Обновить»
+            var visual = _updateVisual?.Invoke(item) ?? UpdateVisual.None;
+            var splitR = visual is UpdateVisual.Available or UpdateVisual.Downloading
+                or UpdateVisual.Staged or UpdateVisual.Error
+                ? rIn + (rOut - rIn) * 0.6
+                : (double?)null;
+            var displayMid = splitR is double sr ? (rIn + sr) / 2 : rMid;
+            var pos = Polar(displayMid, mid);
+            var chord = 2 * displayMid * Math.Sin(step * Math.PI / 360);
+            var maxLabelW = Math.Max(56.0, chord * 0.72);
 
             var hover = new ScaleTransform(1, 1, _cx, _cy);
             var enterScale = new ScaleTransform(1, 1, _cx, _cy);
@@ -452,7 +490,7 @@ internal sealed class RadialMenuRenderer
 
             var path = new WpfPath
             {
-                Data = BuildSector(a1, a2, rIn, rOut),
+                Data = BuildSector(a1, a2, rIn, splitR is double srIn ? srIn - 1.5 : rOut),
                 Fill = _petalFill,
                 Stroke = _petalStroke,
                 StrokeThickness = 5,
@@ -462,10 +500,45 @@ internal sealed class RadialMenuRenderer
             };
             path.RenderTransform = ElementTransform(0, 0, enterScale, enterRotate, hover);
 
+            WpfPath? path2 = null;
+            TextBlock? zoneGlyph = null;
+            if (splitR is double sr2)
+            {
+                path2 = new WpfPath
+                {
+                    Data = BuildSector(a1, a2, sr2 + 1.5, rOut),
+                    Fill = ZoneBrush(visual),
+                    Stroke = _petalStroke,
+                    StrokeThickness = 5,
+                    StrokeLineJoin = PenLineJoin.Round,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round,
+                };
+                path2.RenderTransform = ElementTransform(0, 0, enterScale, enterRotate, hover);
+
+                zoneGlyph = new TextBlock
+                {
+                    Text = ZoneGlyphText(visual),
+                    FontSize = fontSize + 3,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = _textDim,
+                };
+                zoneGlyph.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                var gPos = Polar((sr2 + rOut) / 2, mid);
+                zoneGlyph.RenderTransform = ElementTransform(
+                    gPos.X - zoneGlyph.DesiredSize.Width / 2,
+                    gPos.Y - zoneGlyph.DesiredSize.Height / 2,
+                    enterScale, enterRotate, hover);
+            }
+
             var petal = new Petal
             {
                 Item = item,
                 Path = path,
+                Path2 = path2,
+                SplitR = splitR,
+                Visual = visual,
+                ZoneGlyph = zoneGlyph,
                 Hover = hover,
                 EnterScale = enterScale,
                 EnterRotate = enterRotate,
@@ -547,7 +620,8 @@ internal sealed class RadialMenuRenderer
             if (_isRunning(item))
             {
                 const double dot = 10;
-                var dp = Polar(rOut - 13, mid);
+                // при разделённом лепестке точка уходит во внутреннюю зону, чтобы не спорить с глифом
+                var dp = Polar(splitR is not null ? rIn + 14 : rOut - 13, mid);
                 var ellipse = new System.Windows.Shapes.Ellipse
                 {
                     Width = dot,
@@ -644,18 +718,28 @@ internal sealed class RadialMenuRenderer
         if (r >= _outerHitMin - slack && r <= _outerHitMax + slack && _rootView.Count > 0)
         {
             var i = IndexAt(p, _rootView.Count, gapDeg);
-            if (i >= 0) return new MenuHit(HitKind.Outer, _rootPage * MaxItems + i);
+            if (i >= 0)
+                return new MenuHit(HitKind.Outer, _rootPage * MaxItems + i, ZoneOf(_rootPetals, i, r));
             if (slack == 0) return MenuHit.Miss;
         }
 
         if (_innerView is { Count: > 0 } && r >= _innerHitMin - slack && r <= _innerHitMax + slack)
         {
             var i = IndexAt(p, _innerView.Count, gapDeg);
-            if (i >= 0) return new MenuHit(HitKind.Inner, _innerPage * MaxItems + i);
+            if (i >= 0)
+                return new MenuHit(HitKind.Inner, _innerPage * MaxItems + i, ZoneOf(_innerPetals, i, r));
             if (slack == 0) return MenuHit.Miss;
         }
 
         return MenuHit.Miss;
+    }
+
+    /// <summary>Какая зона лепестка под точкой: внутренняя (запуск) или внешняя (обновление).</summary>
+    private static PressZone ZoneOf(List<Petal> petals, int localIndex, double r)
+    {
+        if (localIndex < 0 || localIndex >= petals.Count) return PressZone.Launch;
+        var sr = petals[localIndex].SplitR;
+        return sr is double s && r >= s ? PressZone.Update : PressZone.Launch;
     }
 
     private int IndexAt(Point p, int count, double gapDeg)
@@ -692,13 +776,22 @@ internal sealed class RadialMenuRenderer
 
         if (!ReferenceEquals(_hovered, hot))
         {
-            if (_hovered is not null) AnimatePetal(_hovered, false);
+            if (_hovered is not null) AnimatePetal(_hovered, false, _hoverZone);
             _hovered = hot;
-            if (_hovered is not null) AnimatePetal(_hovered, true);
+            _hoverZone = hit.Zone;
+            if (_hovered is not null) AnimatePetal(_hovered, true, _hoverZone);
+        }
+        else if (_hovered is not null && _hoverZone != hit.Zone)
+        {
+            // тот же лепесток, другая зона — перекрасить без анимации масштаба
+            _hoverZone = hit.Zone;
+            AnimatePetal(_hovered, true, _hoverZone);
         }
 
         SetCenterHot(hit.Kind == HitKind.Center);
     }
+
+    private PressZone _hoverZone;
 
     private Petal? PetalByGlobal(List<Petal> petals, int page, int globalIndex)
     {
@@ -706,7 +799,7 @@ internal sealed class RadialMenuRenderer
         return local >= 0 && local < petals.Count ? petals[local] : null;
     }
 
-    private void AnimatePetal(Petal petal, bool on)
+    private void AnimatePetal(Petal petal, bool on, PressZone zone)
     {
         var ease = on
             ? new BackEase { Amplitude = 0.45, EasingMode = EasingMode.EaseOut }
@@ -719,13 +812,46 @@ internal sealed class RadialMenuRenderer
         petal.Hover.BeginAnimation(ScaleTransform.ScaleYProperty,
             new DoubleAnimation(target, dur) { EasingFunction = ease });
 
-        petal.Path.Fill = on ? _hoverFill : _petalFill;
-        petal.Path.Stroke = on ? _hoverStroke : _petalStroke;
+        var launchHot = on && zone == PressZone.Launch;
+        petal.Path.Fill = launchHot ? _hoverFill : _petalFill;
+        petal.Path.Stroke = launchHot ? _hoverStroke : _petalStroke;
+
+        if (petal.Path2 is not null)
+        {
+            var zoneHot = on && zone == PressZone.Update;
+            petal.Path2.Fill = zoneHot ? ZoneBrushHot(petal.Visual) : ZoneBrush(petal.Visual);
+            petal.Path2.Stroke = zoneHot ? _hoverStroke : _petalStroke;
+            if (petal.ZoneGlyph is not null)
+                petal.ZoneGlyph.Foreground = zoneHot ? Brushes.White : _textDim;
+        }
+
         var fg = on ? Brushes.White : _text;
         if (petal.Label is not null) petal.Label.Foreground = fg;
         if (petal.Letter is not null) petal.Letter.Foreground = fg;
         if (petal.Marker is not null) petal.Marker.Foreground = on ? Brushes.White : _textDim;
     }
+
+    private Brush ZoneBrush(UpdateVisual v) => v switch
+    {
+        UpdateVisual.Staged => _zoneStaged,
+        UpdateVisual.Error => _zoneError,
+        _ => _zoneFill,
+    };
+
+    private Brush ZoneBrushHot(UpdateVisual v) => v switch
+    {
+        UpdateVisual.Staged => _zoneStagedHot,
+        UpdateVisual.Error => _zoneErrorHot,
+        _ => _zoneHot,
+    };
+
+    private static string ZoneGlyphText(UpdateVisual v) => v switch
+    {
+        UpdateVisual.Downloading => "↻",
+        UpdateVisual.Staged => "✓",
+        UpdateVisual.Error => "!",
+        _ => "↑",
+    };
 
     private void SetCenterHot(bool hot)
     {
@@ -749,13 +875,15 @@ internal sealed class RadialMenuRenderer
     {
         text ??= "";
         if (tb.Text == text) return;
+        var animate = tb.Text.Length == 0 || text.Length == 0 || tb.Text[0] != text[0];
         tb.Text = text;
-        tb.BeginAnimation(UIElement.OpacityProperty,
-            new DoubleAnimation(1.0, new Duration(TimeSpan.FromMilliseconds(70)))
-            {
-                From = 0,
-                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
-            });
+        if (animate)
+            tb.BeginAnimation(UIElement.OpacityProperty,
+                new DoubleAnimation(1.0, new Duration(TimeSpan.FromMilliseconds(70)))
+                {
+                    From = 0,
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                });
     }
 
     private void LayoutHub()
