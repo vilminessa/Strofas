@@ -12,6 +12,12 @@ public sealed class MenuConfig
     /// <summary>Размер меню в DIP (логических пикселях WPF).</summary>
     public int MenuSize { get; set; } = 640;
 
+    /// <summary>Максимум пунктов на кольцо (дальше — страницы, колесо мыши). 4..16.</summary>
+    public int MaxItemsPerRing { get; set; } = 10;
+
+    /// <summary>"auto" — акцент из темы Windows, либо явный hex вида "#5B9DFF".</summary>
+    public string Accent { get; set; } = "auto";
+
     public List<MenuItemConfig> Items { get; set; } = new();
 }
 

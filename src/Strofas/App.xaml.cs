@@ -39,6 +39,7 @@ public partial class App : Application
 
         _executor = new ActionExecutor();
         var cfg = ConfigService.Load();
+        ThemeTokens.Apply(cfg.Accent);
         _menu = new MainWindow(cfg, _executor);
 
         _hotkey = new HotkeyService();
@@ -80,6 +81,7 @@ public partial class App : Application
 
     private void ApplyConfig(MenuConfig cfg)
     {
+        ThemeTokens.Apply(cfg.Accent);
         _hotkey?.Register(cfg.Hotkey);
         _menu?.ApplyConfig(cfg);
     }

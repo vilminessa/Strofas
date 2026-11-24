@@ -13,11 +13,16 @@
         Height="640"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True">
+    <!-- AllowsTransparency=True (layered) обязателен: только layered-окно отдаёт
+         альфу наружу — через него виден Acrylic-бэкдроп. Форму карточки задаёт
+         SetWindowRgn (скруглённый прямоугольник), лепестки рисуются поверх. -->
     <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5" Opacity="1">
         <Grid.RenderTransform>
-            <ScaleTransform x:Name="RootScale" ScaleX="1" ScaleY="1" />
+            <TransformGroup>
+                <ScaleTransform x:Name="RootScale" ScaleX="1" ScaleY="1" />
+                <RotateTransform x:Name="RootRotate" Angle="0" />
+            </TransformGroup>
         </Grid.RenderTransform>
-        <!-- прозрачный фон нужен, чтобы окно получало мышиные события по всей площади -->
         <Canvas x:Name="MenuCanvas" Background="Transparent" />
     </Grid>
 </Window>

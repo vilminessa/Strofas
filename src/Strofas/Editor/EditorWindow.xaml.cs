@@ -23,7 +23,7 @@ public sealed partial class EditorWindow : Window
     {
         InitializeComponent();
         _working = ConfigService.Clone(cfg);
-        _preview = new RadialMenuRenderer(PreviewCanvas, 480, _ => false);
+        _preview = new RadialMenuRenderer(PreviewCanvas, 480, 10, _ => false);
 
         HotkeyBox.Text = _working.Hotkey;
         SizeBox.Text = _working.MenuSize.ToString();
@@ -236,7 +236,7 @@ public sealed partial class EditorWindow : Window
         for (var i = 0; i < _working.Items.Count; i++)
             items.Add(new MenuItemVm(i.ToString(), _working.Items[i]));
         _preview.SetRoot(items);
-        _preview.SetCenter("Strofas", "");
+        _preview.SetCenter("Strofas", "", null);
     }
 
     private void OnPreviewMouseMove(object sender, MouseEventArgs e)
@@ -249,13 +249,13 @@ public sealed partial class EditorWindow : Window
             main = string.IsNullOrWhiteSpace(_working.Items[hit.Index].Label)
                 ? "?"
                 : _working.Items[hit.Index].Label;
-        _preview.SetCenter(main, "");
+        _preview.SetCenter(main, "", null);
     }
 
     private void OnPreviewMouseLeave(object sender, MouseEventArgs e)
     {
         _preview.SetHover(MenuHit.Miss);
-        _preview.SetCenter("Strofas", "");
+        _preview.SetCenter("Strofas", "", null);
     }
 
     // ---------- Сохранение ----------
