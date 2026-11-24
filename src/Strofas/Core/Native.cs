@@ -31,6 +31,27 @@ internal static class Native
     [DllImport("user32.dll")]
     public static extern bool SetCursorPos(int x, int y);
 
+    private const uint SPI_GETCLIENTAREAANIMATION = 0x0404;
+
+    /// <summary>Включена ли анимация в системе (Settings → Accessibility → Animation effects).</summary>
+    public static bool IsAnimationEnabled()
+    {
+        try
+        {
+            var value = 0;
+            if (SystemParametersInfo(SPI_GETCLIENTAREAANIMATION, 0, ref value, 0))
+                return value != 0;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            // старая Windows — считаем включённой
+        }
+        return true;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SystemParametersInfo(uint uiAction, uint uiParam, ref int pvParam, uint fWinIni);
+
     /// <summary>DPI точки (физический, PerMonitorV2). Win10 1703+.</summary>
     [DllImport("user32.dll")]
     public static extern uint GetDpiForPoint(POINT pt);

@@ -65,7 +65,7 @@ internal sealed class RadialMenuRenderer
     private readonly double _outerMax;
 
     // hit-границы шире визуальных: зазоры между лепестками кликабельны,
-    // hit bounds are wider than the visual petals: gaps stay clickable,
+    // радиус заходит за кромку кнопки — цель по Fitts больше самой кнопки
     private readonly double _centerHitR;
     private readonly double _innerHitMin;
     private readonly double _innerHitMax;
@@ -78,6 +78,9 @@ internal sealed class RadialMenuRenderer
     private readonly double _hubDotsY;
     private readonly Func<MenuItemVm, bool> _isRunning;
     private readonly Func<MenuItemVm, UpdateVisual>? _updateVisual;
+
+    /// <summary>Системная анимация включена (иначе — только fade, без стаггера/пружины).</summary>
+    private readonly bool _motion;
 
     private List<MenuItemVm> _rootAll = new();
     private List<MenuItemVm>? _innerAll;
@@ -94,10 +97,17 @@ internal sealed class RadialMenuRenderer
     private int _hoverRing; // 0 = корень, 1 = внутреннее
 
     private readonly Ellipse _hubRing;
-    private readonly TextBlock _hubCrumb;
+    private readonly Border _hubPill;
+    private readonly TextBlock _hubPillText;
     private readonly TextBlock _hubMain;
     private readonly TextBlock _hubHint;
-    private readonly List<Ellipse> _dots = new();
+    private readonly List<UIElement> _dots = new();
+
+    /// <summary>Линия-ретикуль от центра к активному сектору.</summary>
+    private Line? _reticle;
+
+    /// <summary>Стрелка-указатель на активный сектор (приём Coherent/Gameface).</summary>
+    private WpfPath? _chevron;
 
     // кисти — пересоздаются при смене акцента
     private Brush _petalFill = null!;
@@ -148,6 +158,11 @@ internal sealed class RadialMenuRenderer
         public UpdateVisual Visual { get; init; }
         public TextBlock? ZoneGlyph { get; init; }
 
+        // геометрия для указателя/линии-ретикуля
+        public required double Mid { get; init; }
+        public required double RIn { get; init; }
+        public required double RMid { get; init; }
+
         public required ScaleTransform Hover { get; init; }
         public required ScaleTransform EnterScale { get; init; }
         public required RotateTransform EnterRotate { get; init; }
@@ -156,11 +171,15 @@ internal sealed class RadialMenuRenderer
         public TextBlock? Marker { get; set; }
         public Image? Icon { get; set; }
         public UIElement? Dot { get; set; }
-        public UIElement? BlurLayer { get; set; }
+        public UIElement? Surface { get; set; }
+
+        // тени: чёрная — парение; акцентная — bloom на hover (мутируются, не frozen)
+        public DropShadowEffect? Shadow { get; set; }
+        public DropShadowEffect? ShadowZone { get; set; }
 
         public IEnumerable<UIElement> Elements()
         {
-            if (BlurLayer is not null) yield return BlurLayer;
+            if (Surface is not null) yield return Surface;
             yield return Path;
             if (Path2 is not null) yield return Path2;
             if (Label is not null) yield return Label;
@@ -182,6 +201,7 @@ internal sealed class RadialMenuRenderer
         MaxItems = maxItems;
         _isRunning = isRunning;
         _updateVisual = updateVisual;
+        _motion = Native.IsAnimationEnabled();
 
         _centerR = size * 0.085;
         _innerMin = size * 0.097;
@@ -210,14 +230,20 @@ internal sealed class RadialMenuRenderer
         Canvas.SetLeft(_hubRing, _cx - _centerR);
         Canvas.SetTop(_hubRing, _cy - _centerR);
 
-        _hubCrumb = new TextBlock
+        // pill-бейдж статуса (акцентный для github-состояний, нейтральный для breadcrumb)
+        _hubPillText = new TextBlock
         {
             FontSize = Math.Max(9, size * 0.0155),
+            FontWeight = FontWeights.Medium,
             Foreground = _textDim,
-            TextAlignment = TextAlignment.Center,
-            Width = _hubTextW,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            MaxHeight = size * 0.024,
+        };
+        _hubPill = new Border
+        {
+            CornerRadius = new CornerRadius(999),
+            Padding = new Thickness(9, 2, 9, 2),
+            Background = Solid(0x24, 0xFF, 0xFF, 0xFF),
+            Child = _hubPillText,
+            Visibility = Visibility.Collapsed,
         };
 
         _hubMain = new TextBlock
@@ -253,6 +279,42 @@ internal sealed class RadialMenuRenderer
 
     private static Brush Solid(byte a, byte r, byte g, byte b)
         => Freeze(new SolidColorBrush(Color.FromArgb(a, r, g, b)));
+
+    private static ImageBrush? _noise;
+
+    /// <summary>
+    /// Процедурное зерно (128×128, без файлов): моношум с низкой альфой,
+    /// тайлится по64 DIP. Один раз на процесс, frozen.
+    /// </summary>
+    private static ImageBrush GetNoise()
+    {
+        if (_noise is not null) return _noise;
+        const int size = 128;
+        var bmp = new WriteableBitmap(size, size, 96, 96, PixelFormats.Pbgra32, null);
+        var pixels = new byte[size * size * 4];
+        var rnd = new Random(7); // детерминированно
+        for (var i = 0; i < size * size; i++)
+        {
+            var v = (byte)rnd.Next(256);
+            var a = (byte)rnd.Next(0, 46); // альфа0..45 — мягкий шум
+            pixels[i * 4] = v;
+            pixels[i * 4 + 1] = v;
+            pixels[i * 4 + 2] = v;
+            pixels[i * 4 + 3] = a;
+        }
+        bmp.WritePixels(new Int32Rect(0, 0, size, size), pixels, size * 4, 0);
+        bmp.Freeze();
+
+        var brush = new ImageBrush(bmp)
+        {
+            TileMode = TileMode.Tile,
+            ViewportUnits = BrushMappingMode.Absolute,
+            Viewport = new Rect(0, 0, 64, 64),
+        };
+        brush.Freeze();
+        _noise = brush;
+        return brush;
+    }
 
     private void RebuildBrushes()
     {
@@ -313,7 +375,7 @@ internal sealed class RadialMenuRenderer
         _dotOn = Freeze(new SolidColorBrush(Color.FromArgb(0xE6, acc.R, acc.G, acc.B)));
         _dotOff = Solid(0x4D, 0xFF, 0xFF, 0xFF);
 
-        _hubCrumb.Foreground = _textDim;
+        _hubPillText.Foreground = _textDim;
         _hubMain.Foreground = _text;
         _hubHint.Foreground = _textDim;
         _hubRing.Fill = _hubFill;
@@ -373,7 +435,19 @@ internal sealed class RadialMenuRenderer
         }
 
         Rebuild();
+        PlayPageFlip(innerRing ? 1 : 0, step);
+        Log.Info($"колесо: ring={(innerRing ? "inner" : "root")} страница={(innerRing ? _innerPage : _rootPage)}/{pages - 1}");
         return true;
+    }
+
+    /// <summary>Колесо «проворачивается»: новая страница ввинчивается с инерцией.</summary>
+    private void PlayPageFlip(int ring, int dir)
+    {
+        if (!_motion) return;
+        var petals = ring == 1 ? _innerPetals : _rootPetals;
+        var ease = new BackEase { Amplitude = 0.5, EasingMode = EasingMode.EaseOut };
+        for (var i = 0; i < petals.Count; i++)
+            AnimatePetalIn(petals[i], i * 8, dir * 22, 0.94, ease);
     }
 
     /// <summary>Перелистывает страницу так, чтобы глобальный пункт был виден.</summary>
@@ -416,15 +490,76 @@ internal sealed class RadialMenuRenderer
         _centerHot = false;
         _dots.Clear();
 
+        DrawTrackRing();
+
         if (_rootView.Count > 0) BuildRing(_rootView, _rootPetals, _outerMin, _outerMax);
         if (_innerView is { Count: > 0 }) BuildRing(_innerView, _innerPetals, _innerMin, _innerMax);
 
+        // указатели (поверх лепестков, под хабом): линия-ретикуль и шеврон сектора
+        _reticle = new Line
+        {
+            Stroke = Solid(0x99, ThemeTokens.Accent.R, ThemeTokens.Accent.G, ThemeTokens.Accent.B),
+            StrokeThickness = 1.5,
+            StrokeDashArray = new DoubleCollection { 5, 5 },
+            Visibility = Visibility.Collapsed,
+        };
+        _canvas.Children.Add(_reticle);
+
+        _chevron = new WpfPath
+        {
+            Data = BuildChevron(),
+            Fill = Solid(0xE6, 0xFF, 0xFF, 0xFF),
+            Visibility = Visibility.Collapsed,
+        };
+        _canvas.Children.Add(_chevron);
+
         _canvas.Children.Add(_hubRing);
-        _canvas.Children.Add(_hubCrumb);
+        _canvas.Children.Add(_hubPill);
         _canvas.Children.Add(_hubMain);
         _canvas.Children.Add(_hubHint);
         SetCenterHot(false);
         DrawHubDots(_hoverRing);
+    }
+
+    /// <summary>Тонкое трек-кольцо под лепестками — колесо как механизм.</summary>
+    private void DrawTrackRing()
+    {
+        var r = _outerMax + _size * 0.018;
+        var acc = ThemeTokens.Accent;
+        var ring = new System.Windows.Shapes.Ellipse
+        {
+            Width = r * 2,
+            Height = r * 2,
+            StrokeThickness = 1.5,
+            Stroke = new LinearGradientBrush
+            {
+                StartPoint = new Point(0, 0),
+                EndPoint = new Point(1, 1),
+                GradientStops =
+                {
+                    new GradientStop(Color.FromArgb(0x14, acc.R, acc.G, acc.B), 0),
+                    new GradientStop(Color.FromArgb(0x59, acc.R, acc.G, acc.B), 0.5),
+                    new GradientStop(Color.FromArgb(0x14, acc.R, acc.G, acc.B), 1),
+                },
+            },
+        };
+        Canvas.SetLeft(ring, _cx - r);
+        Canvas.SetTop(ring, _cy - r);
+        _canvas.Children.Add(ring);
+    }
+
+    /// <summary>Шеврон-указатель, направленный вдоль +X (поворачивается к сектору).</summary>
+    private Geometry BuildChevron()
+    {
+        var g = new StreamGeometry();
+        using (var ctx = g.Open())
+        {
+            ctx.BeginFigure(new Point(0, -5), true, true);
+            ctx.LineTo(new Point(9, 0), true, false);
+            ctx.LineTo(new Point(0, 5), true, false);
+        }
+        g.Freeze();
+        return g;
     }
 
     private void BuildRing(List<MenuItemVm> items, List<Petal> petals, double rIn, double rOut)
@@ -458,16 +593,15 @@ internal sealed class RadialMenuRenderer
             var enterScale = new ScaleTransform(1, 1, _cx, _cy);
             var enterRotate = new RotateTransform(0, _cx, _cy);
 
-            // размытый фон под лепестком: снимок экрана, обрезанный геометрией сектора
-            Grid? blurLayer = null;
+            // поверхность лепестка: размытый фон (снимок экрана) + зерно, обрез сектором
+            var surface = new Grid
+            {
+                Width = _size,
+                Height = _size,
+                Clip = BuildSector(a1, a2, rIn, rOut),
+            };
             if (BackdropSource is not null)
             {
-                blurLayer = new Grid
-                {
-                    Width = _size,
-                    Height = _size,
-                    Clip = BuildSector(a1, a2, rIn, rOut),
-                };
                 var blurImg = new Image
                 {
                     Source = BackdropSource,
@@ -482,11 +616,28 @@ internal sealed class RadialMenuRenderer
                 };
                 Canvas.SetLeft(blurImg, 0);
                 Canvas.SetTop(blurImg, 0);
-                blurLayer.Children.Add(blurImg);
-                blurLayer.RenderTransform = ElementTransform(0, 0, enterScale, enterRotate, hover);
+                surface.Children.Add(blurImg);
                 _blurImages.Add(blurImg);
-                // в canvas добавляется через petal.Elements() — порядок=z: blur под path
             }
+            // зерно/шум — тактильность материала (тренд2026: grain на стекле)
+            surface.Children.Add(new System.Windows.Shapes.Rectangle
+            {
+                Width = _size,
+                Height = _size,
+                Fill = GetNoise(),
+                Opacity = 0.30,
+            });
+            surface.RenderTransform = ElementTransform(0, 0, enterScale, enterRotate, hover);
+
+            // тени: чёрная — «парение» над фоном; акцентная — bloom на hover
+            var shadow = new DropShadowEffect
+            {
+                Color = Colors.Black,
+                BlurRadius = 14,
+                ShadowDepth = 4,
+                Direction = 270,
+                Opacity = 0.40,
+            };
 
             var path = new WpfPath
             {
@@ -497,13 +648,23 @@ internal sealed class RadialMenuRenderer
                 StrokeLineJoin = PenLineJoin.Round,
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round,
+                Effect = shadow,
             };
             path.RenderTransform = ElementTransform(0, 0, enterScale, enterRotate, hover);
 
             WpfPath? path2 = null;
             TextBlock? zoneGlyph = null;
+            DropShadowEffect? shadowZone = null;
             if (splitR is double sr2)
             {
+                shadowZone = new DropShadowEffect
+                {
+                    Color = Colors.Black,
+                    BlurRadius = 14,
+                    ShadowDepth = 4,
+                    Direction = 270,
+                    Opacity = 0.40,
+                };
                 path2 = new WpfPath
                 {
                     Data = BuildSector(a1, a2, sr2 + 1.5, rOut),
@@ -513,6 +674,7 @@ internal sealed class RadialMenuRenderer
                     StrokeLineJoin = PenLineJoin.Round,
                     StrokeStartLineCap = PenLineCap.Round,
                     StrokeEndLineCap = PenLineCap.Round,
+                    Effect = shadowZone,
                 };
                 path2.RenderTransform = ElementTransform(0, 0, enterScale, enterRotate, hover);
 
@@ -539,10 +701,15 @@ internal sealed class RadialMenuRenderer
                 SplitR = splitR,
                 Visual = visual,
                 ZoneGlyph = zoneGlyph,
+                Mid = mid,
+                RIn = rIn,
+                RMid = displayMid,
                 Hover = hover,
                 EnterScale = enterScale,
                 EnterRotate = enterRotate,
-                BlurLayer = blurLayer,
+                Surface = surface,
+                Shadow = shadow,
+                ShadowZone = shadowZone,
             };
 
             // иконка или буква
@@ -633,6 +800,19 @@ internal sealed class RadialMenuRenderer
                 ellipse.RenderTransform = ElementTransform(
                     dp.X - dot / 2, dp.Y - dot / 2, enterScale, enterRotate, hover);
                 petal.Dot = ellipse;
+                if (_motion)
+                {
+                    // мягкая пульсация «запущено»
+                    ellipse.Opacity = 0.6;
+                    ellipse.BeginAnimation(UIElement.OpacityProperty,
+                        new DoubleAnimation(1, new Duration(TimeSpan.FromMilliseconds(700)))
+                        {
+                            From = 0.55,
+                            AutoReverse = true,
+                            RepeatBehavior = RepeatBehavior.Forever,
+                            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseInOut },
+                        });
+                }
             }
 
             foreach (var el in petal.Elements())
@@ -788,10 +968,81 @@ internal sealed class RadialMenuRenderer
             AnimatePetal(_hovered, true, _hoverZone);
         }
 
+        UpdatePointers(hit, hot);
         SetCenterHot(hit.Kind == HitKind.Center);
     }
 
+    /// <summary>Линия-ретикуль от центра и шеврон на активном секторе.</summary>
+    private void UpdatePointers(in MenuHit hit, Petal? petal)
+    {
+        if (_reticle is null || _chevron is null) return;
+        if (petal is null)
+        {
+            _reticle.Visibility = Visibility.Collapsed;
+            _chevron.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var end = Polar(petal.RMid, petal.Mid);
+        _reticle.X1 = _cx;
+        _reticle.Y1 = _cy;
+        _reticle.X2 = end.X;
+        _reticle.Y2 = end.Y;
+        _reticle.Visibility = Visibility.Visible;
+
+        var anchor = Polar(petal.RIn + 13, petal.Mid);
+        var tg = new TransformGroup();
+        tg.Children.Add(new RotateTransform(petal.Mid));
+        tg.Children.Add(new TranslateTransform(anchor.X, anchor.Y));
+        _chevron.RenderTransform = tg;
+        _chevron.Visibility = Visibility.Visible;
+        if (_motion)
+        {
+            _chevron.Opacity = 0;
+            _chevron.BeginAnimation(UIElement.OpacityProperty,
+                new DoubleAnimation(1, new Duration(TimeSpan.FromMilliseconds(110)))
+                {
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                });
+        }
+        else
+        {
+            _chevron.Opacity = 1;
+        }
+    }
+
     private PressZone _hoverZone;
+
+    /// <summary>Тактильный отклик клика: быстрый press-in лепестка.</summary>
+    public void PressPetal(in MenuHit hit)
+    {
+        if (!_motion) return;
+        Petal? petal = hit.Kind switch
+        {
+            HitKind.Outer => PetalByGlobal(_rootPetals, _rootPage, hit.Index),
+            HitKind.Inner => PetalByGlobal(_innerPetals, _innerPage, hit.Index),
+            _ => null,
+        };
+        if (petal is null) return;
+
+        var press = new DoubleAnimation(0.965, new Duration(TimeSpan.FromMilliseconds(70)))
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+        };
+        press.Completed += (_, _) =>
+        {
+            var back = new DoubleAnimation(
+                ReferenceEquals(_hovered, petal) ? 1.045 : 1.0,
+                new Duration(TimeSpan.FromMilliseconds(160)))
+            {
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+            };
+            petal.Hover.BeginAnimation(ScaleTransform.ScaleXProperty, back);
+            petal.Hover.BeginAnimation(ScaleTransform.ScaleYProperty, back);
+        };
+        petal.Hover.BeginAnimation(ScaleTransform.ScaleXProperty, press);
+        petal.Hover.BeginAnimation(ScaleTransform.ScaleYProperty, press);
+    }
 
     private Petal? PetalByGlobal(List<Petal> petals, int page, int globalIndex)
     {
@@ -801,16 +1052,31 @@ internal sealed class RadialMenuRenderer
 
     private void AnimatePetal(Petal petal, bool on, PressZone zone)
     {
-        var ease = on
-            ? new BackEase { Amplitude = 0.45, EasingMode = EasingMode.EaseOut }
-            : (IEasingFunction)new QuadraticEase { EasingMode = EasingMode.EaseOut };
-        var dur = new Duration(TimeSpan.FromMilliseconds(on ? 150 : 120));
-        var target = on ? 1.045 : 1.0;
+        if (_motion)
+        {
+            var ease = on
+                ? new BackEase { Amplitude = 0.55, EasingMode = EasingMode.EaseOut }
+                : (IEasingFunction)new QuadraticEase { EasingMode = EasingMode.EaseOut };
+            var dur = new Duration(TimeSpan.FromMilliseconds(on ? 150 : 120));
+            var target = on ? 1.045 : 1.0;
 
-        petal.Hover.BeginAnimation(ScaleTransform.ScaleXProperty,
-            new DoubleAnimation(target, dur) { EasingFunction = ease });
-        petal.Hover.BeginAnimation(ScaleTransform.ScaleYProperty,
-            new DoubleAnimation(target, dur) { EasingFunction = ease });
+            petal.Hover.BeginAnimation(ScaleTransform.ScaleXProperty,
+                new DoubleAnimation(target, dur) { EasingFunction = ease });
+            petal.Hover.BeginAnimation(ScaleTransform.ScaleYProperty,
+                new DoubleAnimation(target, dur) { EasingFunction = ease });
+        }
+        else
+        {
+            // уменьшение движения: мгновенный масштаб без пружины
+            petal.Hover.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            petal.Hover.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            petal.Hover.ScaleX = petal.Hover.ScaleY = on ? 1.03 : 1.0;
+        }
+
+        // тени: bloom-свечение акцентом на hover (парение → свечение)
+        if (petal.Shadow is not null) TuneShadow(petal.Shadow, on);
+        if (petal.ShadowZone is not null)
+            TuneShadow(petal.ShadowZone, on && zone == PressZone.Update || on && petal.Path2 is null);
 
         var launchHot = on && zone == PressZone.Launch;
         petal.Path.Fill = launchHot ? _hoverFill : _petalFill;
@@ -829,6 +1095,36 @@ internal sealed class RadialMenuRenderer
         if (petal.Label is not null) petal.Label.Foreground = fg;
         if (petal.Letter is not null) petal.Letter.Foreground = fg;
         if (petal.Marker is not null) petal.Marker.Foreground = on ? Brushes.White : _textDim;
+    }
+
+    /// <summary>Тень → акцентное свечение вокруг лепестка при наведении.</summary>
+    private void TuneShadow(DropShadowEffect sh, bool on)
+    {
+        var toColor = on ? ThemeTokens.Accent : Colors.Black;
+        var toRadius = on ? 26.0 : 14.0;
+        var toOpacity = on ? 0.75 : 0.40;
+        if (_motion)
+        {
+            var dur = new Duration(TimeSpan.FromMilliseconds(150));
+            sh.BeginAnimation(DropShadowEffect.ColorProperty,
+                new ColorAnimation(toColor, dur));
+            sh.BeginAnimation(DropShadowEffect.BlurRadiusProperty,
+                new DoubleAnimation(toRadius, dur)
+                {
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                });
+            sh.BeginAnimation(DropShadowEffect.OpacityProperty,
+                new DoubleAnimation(toOpacity, dur));
+        }
+        else
+        {
+            sh.BeginAnimation(DropShadowEffect.ColorProperty, null);
+            sh.BeginAnimation(DropShadowEffect.BlurRadiusProperty, null);
+            sh.BeginAnimation(DropShadowEffect.OpacityProperty, null);
+            sh.Color = toColor;
+            sh.BlurRadius = toRadius;
+            sh.Opacity = toOpacity;
+        }
     }
 
     private Brush ZoneBrush(UpdateVisual v) => v switch
@@ -863,12 +1159,37 @@ internal sealed class RadialMenuRenderer
 
     // ---------- Hub ----------
 
-    public void SetCenter(string main, string hint, string? breadcrumb)
+    public void SetCenter(string main, string hint, string? pill, bool pillAccent = false)
     {
-        SetText(_hubCrumb, breadcrumb);
+        if (string.IsNullOrEmpty(pill))
+        {
+            _hubPill.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            _hubPill.Visibility = Visibility.Visible;
+            _hubPill.Background = pillAccent
+                ? Solid(0x38, ThemeTokens.Accent.R, ThemeTokens.Accent.G, ThemeTokens.Accent.B)
+                : Solid(0x24, 0xFF, 0xFF, 0xFF);
+            _hubPillText.Foreground = pillAccent
+                ? MixWhite(ThemeTokens.Accent, 0.8f)
+                : _textDim;
+            SetText(_hubPillText, pill);
+        }
+
         SetText(_hubMain, main);
         SetText(_hubHint, hint);
         LayoutHub();
+    }
+
+    private static SolidColorBrush MixWhite(Color c, float t)
+    {
+        var b = new SolidColorBrush(Color.FromRgb(
+            (byte)(c.R + (255 - c.R) * t),
+            (byte)(c.G + (255 - c.G) * t),
+            (byte)(c.B + (255 - c.B) * t)));
+        b.Freeze();
+        return b;
     }
 
     private static void SetText(TextBlock tb, string? text)
@@ -888,12 +1209,12 @@ internal sealed class RadialMenuRenderer
 
     private void LayoutHub()
     {
-        _hubCrumb.Visibility = string.IsNullOrEmpty(_hubCrumb.Text)
-            ? Visibility.Collapsed : Visibility.Visible;
-
-        _hubCrumb.Measure(new Size(_hubTextW, double.PositiveInfinity));
-        Canvas.SetLeft(_hubCrumb, _cx - _hubTextW / 2);
-        Canvas.SetTop(_hubCrumb, _hubCrumbY - _hubCrumb.DesiredSize.Height / 2);
+        if (_hubPill.Visibility == Visibility.Visible)
+        {
+            _hubPill.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            Canvas.SetLeft(_hubPill, _cx - _hubPill.DesiredSize.Width / 2);
+            Canvas.SetTop(_hubPill, _hubCrumbY - _hubPill.DesiredSize.Height / 2);
+        }
 
         _hubMain.Measure(new Size(_hubTextW, double.PositiveInfinity));
         Canvas.SetLeft(_hubMain, _cx - _hubTextW / 2);
@@ -913,21 +1234,40 @@ internal sealed class RadialMenuRenderer
         if (pages <= 1) return;
 
         var page = ring == 1 ? _innerPage : _rootPage;
-        var spacing = 9.0;
-        var startX = _cx - (pages - 1) * spacing / 2;
+        const double gap = 7;
+        var widths = new double[pages];
+        for (var i = 0; i < pages; i++) widths[i] = i == page ? 18 : 7;
+        var total = widths.Sum() + gap * (pages - 1);
+        var x = _cx - total / 2;
 
         for (var i = 0; i < pages; i++)
         {
-            var dot = new System.Windows.Shapes.Ellipse
+            UIElement el;
+            if (i == page)
             {
-                Width = 5,
-                Height = 5,
-                Fill = i == page ? _dotOn : _dotOff,
-            };
-            Canvas.SetLeft(dot, startX + i * spacing - 2.5);
-            Canvas.SetTop(dot, _hubDotsY - 2.5);
-            _dots.Add(dot);
-            _canvas.Children.Add(dot);
+                // активная страница — вытянутая пилюля (современный карусель-индикатор)
+                el = new Border
+                {
+                    Width = 18,
+                    Height = 7,
+                    CornerRadius = new CornerRadius(3.5),
+                    Background = _dotOn,
+                };
+            }
+            else
+            {
+                el = new System.Windows.Shapes.Ellipse
+                {
+                    Width = 7,
+                    Height = 7,
+                    Fill = _dotOff,
+                };
+            }
+            Canvas.SetLeft(el, x);
+            Canvas.SetTop(el, _hubDotsY - 3.5);
+            x += widths[i] + gap;
+            _dots.Add(el);
+            _canvas.Children.Add(el);
         }
     }
 
@@ -935,35 +1275,43 @@ internal sealed class RadialMenuRenderer
 
     public void PlayOpenAnimation()
     {
-        var ease = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+        IEasingFunction ease = _motion
+            ? new BackEase { Amplitude = 0.6, EasingMode = EasingMode.EaseOut }
+            : new QuadraticEase { EasingMode = EasingMode.EaseOut };
         for (var i = 0; i < _rootPetals.Count; i++)
-            AnimatePetalIn(_rootPetals[i], i * 12, -6, 0.86, ease);
+            AnimatePetalIn(_rootPetals[i], i * 12, -5, 0.88, ease);
 
         FadeHubIn();
     }
 
     private void PlayInnerAnimation()
     {
-        var ease = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+        IEasingFunction ease = _motion
+            ? new BackEase { Amplitude = 0.55, EasingMode = EasingMode.EaseOut }
+            : new QuadraticEase { EasingMode = EasingMode.EaseOut };
         var step = _innerView is { Count: > 0 } ? 360.0 / _innerView.Count : 90;
         var startAngle = Math.Min(step * 0.4, 30);
         for (var i = 0; i < _innerPetals.Count; i++)
             AnimatePetalIn(_innerPetals[i], i * 10, startAngle, 0.9, ease);
     }
 
-    private static void AnimatePetalIn(Petal petal, int delayMs, double fromAngle,
+    private void AnimatePetalIn(Petal petal, int delayMs, double fromAngle,
         double fromScale, IEasingFunction ease)
     {
-        var begin = TimeSpan.FromMilliseconds(delayMs);
-        var dur = new Duration(TimeSpan.FromMilliseconds(170));
+        // reduced motion: без стаггера/вращения — только быстрый fade
+        var motion = _motion;
+        var begin = TimeSpan.FromMilliseconds(motion ? delayMs : 0);
+        var dur = new Duration(TimeSpan.FromMilliseconds(motion ? 170 : 90));
+        var angle = motion ? fromAngle : 0;
+        var scale = motion ? fromScale : 1;
 
-        petal.EnterScale.ScaleX = petal.EnterScale.ScaleY = fromScale;
+        petal.EnterScale.ScaleX = petal.EnterScale.ScaleY = scale;
         petal.EnterScale.BeginAnimation(ScaleTransform.ScaleXProperty,
             new DoubleAnimation(1, dur) { EasingFunction = ease, BeginTime = begin });
         petal.EnterScale.BeginAnimation(ScaleTransform.ScaleYProperty,
             new DoubleAnimation(1, dur) { EasingFunction = ease, BeginTime = begin });
 
-        petal.EnterRotate.Angle = fromAngle;
+        petal.EnterRotate.Angle = angle;
         petal.EnterRotate.BeginAnimation(RotateTransform.AngleProperty,
             new DoubleAnimation(0, dur) { EasingFunction = ease, BeginTime = begin });
 
@@ -984,7 +1332,7 @@ internal sealed class RadialMenuRenderer
             EasingFunction = ease,
         };
         _hubRing.BeginAnimation(UIElement.OpacityProperty, anim);
-        foreach (var tb in new[] { _hubCrumb, _hubMain, _hubHint })
+        foreach (var tb in new UIElement[] { _hubPill, _hubMain, _hubHint })
             tb.BeginAnimation(UIElement.OpacityProperty,
                 new DoubleAnimation(1, new Duration(TimeSpan.FromMilliseconds(260)))
                 {
@@ -992,6 +1340,38 @@ internal sealed class RadialMenuRenderer
                     BeginTime = TimeSpan.FromMilliseconds(80),
                     EasingFunction = ease,
                 });
+
+        // дыхание стартует после fade-in, чтобы не перебить его
+        if (_motion)
+        {
+            anim.Completed += (_, _) => StartHubBreath();
+        }
+    }
+
+    /// <summary>Idle-дыхание хаба: мягкая пульсация кольца, пока меню открыто.</summary>
+    private void StartHubBreath()
+    {
+        _hubRing.RenderTransformOrigin = new Point(0.5, 0.5);
+        _hubRing.RenderTransform = new ScaleTransform(1, 1);
+
+        var scale = new DoubleAnimation(1.018, new Duration(TimeSpan.FromMilliseconds(1900)))
+        {
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+        };
+        _hubRing.RenderTransform.BeginAnimation(ScaleTransform.ScaleXProperty, scale);
+        _hubRing.RenderTransform.BeginAnimation(ScaleTransform.ScaleYProperty, scale);
+
+        var glow = new DoubleAnimation(0.85, new Duration(TimeSpan.FromMilliseconds(1900)))
+        {
+            From = 1,
+            BeginTime = TimeSpan.FromMilliseconds(300),
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+        };
+        _hubRing.BeginAnimation(UIElement.OpacityProperty, glow);
     }
 }
 

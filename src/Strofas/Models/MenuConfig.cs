@@ -13,7 +13,7 @@ public sealed class MenuConfig
     public int MenuSize { get; set; } = 640;
 
     /// <summary>Максимум пунктов на кольцо (дальше — страницы, колесо мыши). 4..16.</summary>
-    public int MaxItemsPerRing { get; set; } = 10;
+    public int MaxItemsPerRing { get; set; } = 8;
 
     /// <summary>"auto" — акцент из темы Windows, либо явный hex вида "#5B9DFF".</summary>
     public string Accent { get; set; } = "auto";

@@ -411,7 +411,11 @@ public sealed partial class MainWindow : Window
         }
 
         _renderer.SetHover(hit);
-        _renderer.SetCenter(CenterMain(hit), CenterHint(), CrumbFor(hit));
+        var main = CenterMain(hit);
+        var crumb = CrumbFor(hit);
+        // pill не дублирует подпись (breadcrumb на уровне корня = имя категории)
+        if (crumb.Text == main) crumb = (null, false);
+        _renderer.SetCenter(main, CenterHint(), crumb.Text, crumb.Accent);
     }
 
     private string CenterMain(in MenuHit hit)
@@ -421,11 +425,12 @@ public sealed partial class MainWindow : Window
         return item is null ? "Strofas" : item.Config.Label;
     }
 
-    /// <summary>Статус github-пункта в верхней строке хаба, иначе — breadcrumb пути.</summary>
-    private string? CrumbFor(in MenuHit hit)
+    /// <summary>Статус github-пункта — акцентный pill; иначе — breadcrumb пути.</summary>
+    private (string? Text, bool Accent) CrumbFor(in MenuHit hit)
     {
         var status = _github.GetStatusText(HitItem(hit)?.Config, hit.Zone);
-        return status ?? Breadcrumb();
+        if (status is not null) return (status, true);
+        return (Breadcrumb(), false);
     }
 
     private string CenterHint() => _chain.Count > 0 ? "Назад" : "Закрыть";
@@ -466,7 +471,9 @@ public sealed partial class MainWindow : Window
     private void OnLeftClick(object sender, MouseButtonEventArgs e)
     {
         if (!IsVisible) return;
-        ActivateHit(_renderer.HitTest(e.GetPosition(this)));
+        var hit = _renderer.HitTest(e.GetPosition(this));
+        _renderer.PressPetal(hit);
+        ActivateHit(hit);
         e.Handled = true;
     }
 
@@ -554,7 +561,9 @@ public sealed partial class MainWindow : Window
     private void OnMouseWheel(object sender, MouseWheelEventArgs e)
     {
         if (!IsVisible) return;
-        if (_renderer.Wheel(e.Delta, e.GetPosition(this)))
+        var pos = e.GetPosition(this);
+        Log.Info($"wheel d={e.Delta} pos=({pos.X:F0},{pos.Y:F0})");
+        if (_renderer.Wheel(e.Delta, pos))
             UpdateFromPointer();
         e.Handled = true;
     }
