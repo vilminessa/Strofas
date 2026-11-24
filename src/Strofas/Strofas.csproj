@@ -9,7 +9,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>Strofas</AssemblyName>
     <RootNamespace>Strofas</RootNamespace>
-    <Version>0.2.0</Version>
+    <Version>0.0.1</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- WFO0003: DPI-настройки в манифесте нужны WPF (PerMonitorV2) — не убираем -->
     <NoWarn>$(NoWarn);WFO0003</NoWarn>
