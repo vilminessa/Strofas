@@ -173,6 +173,10 @@ internal sealed class RadialMenuRenderer
         public UIElement? Dot { get; set; }
         public UIElement? Surface { get; set; }
 
+        /// <summary>Стеклянный чип под иконкой/буквой (круг с градиентом и рамкой).</summary>
+        public Border? Chip { get; set; }
+        public DropShadowEffect? ChipShadow { get; set; }
+
         // тени: чёрная — парение; акцентная — bloom на hover (мутируются, не frozen)
         public DropShadowEffect? Shadow { get; set; }
         public DropShadowEffect? ShadowZone { get; set; }
@@ -183,9 +187,13 @@ internal sealed class RadialMenuRenderer
             yield return Path;
             if (Path2 is not null) yield return Path2;
             if (Label is not null) yield return Label;
-            if (Letter is not null) yield return Letter;
+            if (Chip is not null) yield return Chip;
+            else
+            {
+                if (Letter is not null) yield return Letter;
+                if (Icon is not null) yield return Icon;
+            }
             if (Marker is not null) yield return Marker;
-            if (Icon is not null) yield return Icon;
             if (Dot is not null) yield return Dot;
             if (ZoneGlyph is not null) yield return ZoneGlyph;
         }
@@ -712,38 +720,33 @@ internal sealed class RadialMenuRenderer
                 ShadowZone = shadowZone,
             };
 
-            // иконка или буква
+            // стеклянный чип: круглая подложка под иконкой/буквой
             var iconCy = pos.Y - iconSize * 0.9;
-            var source = IconCache.Get(item.Config.Icon);
-            if (source is not null)
+            var chipSize = iconSize + 14;
+            var chip = new Border
             {
-                var img = new Image
-                {
-                    Source = source,
-                    Width = iconSize,
-                    Height = iconSize,
-                    Stretch = Stretch.Uniform,
-                };
-                img.RenderTransform = ElementTransform(
-                    pos.X - iconSize / 2, iconCy - iconSize / 2, enterScale, enterRotate, hover);
-                petal.Icon = img;
-            }
-            else
+                Width = chipSize,
+                Height = chipSize,
+                CornerRadius = new CornerRadius(chipSize / 2),
+                Background = BuildGlassFill(),
+                BorderBrush = BuildGlassStroke(),
+                BorderThickness = new Thickness(1.2),
+            };
+            var chipShadow = new DropShadowEffect
             {
-                var letter = new TextBlock
-                {
-                    Text = FirstLetter(item.Config.Label),
-                    FontSize = iconSize + 4,
-                    FontWeight = FontWeights.SemiBold,
-                    Foreground = _text,
-                };
-                letter.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-                letter.RenderTransform = ElementTransform(
-                    pos.X - letter.DesiredSize.Width / 2,
-                    iconCy - letter.DesiredSize.Height / 2,
-                    enterScale, enterRotate, hover);
-                petal.Letter = letter;
-            }
+                Color = Colors.Black,
+                BlurRadius = 8,
+                ShadowDepth = 2,
+                Direction = 270,
+                Opacity = 0.35,
+            };
+            chip.Effect = chipShadow;
+            chip.Child = BuildIconContent(item, iconSize);
+            chip.RenderTransform = ElementTransform(
+                pos.X - chipSize / 2, iconCy - chipSize / 2, enterScale, enterRotate, hover);
+            petal.Chip = chip;
+            petal.ChipShadow = chipShadow;
+            if (chip.Child is TextBlock tb) petal.Letter = tb;
 
             // подпись
             var label = new TextBlock
@@ -862,6 +865,81 @@ internal sealed class RadialMenuRenderer
     {
         var t = label.Trim();
         return t.Length == 0 ? "?" : char.ToUpperInvariant(t[0]).ToString();
+    }
+
+    /// <summary>Заливка стеклянного чипа: 3-stop градиент (светлый верх → прозрачный низ).</summary>
+    private static LinearGradientBrush BuildGlassFill()
+    {
+        var b = new LinearGradientBrush
+        {
+            StartPoint = new Point(0.5, 0),
+            EndPoint = new Point(0.5, 1),
+            GradientStops =
+            {
+                new GradientStop(Color.FromArgb(0x30, 0xFF, 0xFF, 0xFF), 0),
+                new GradientStop(Color.FromArgb(0x18, 0xFF, 0xFF, 0xFF), 0.45),
+                new GradientStop(Color.FromArgb(0x0E, 0x00, 0x00, 0x00), 1),
+            },
+        };
+        b.Freeze();
+        return b;
+    }
+
+    /// <summary>Рамка стекла: светлая сверху, тёмная снизу (двойная обводка).</summary>
+    private static LinearGradientBrush BuildGlassStroke()
+    {
+        var b = new LinearGradientBrush
+        {
+            StartPoint = new Point(0.5, 0),
+            EndPoint = new Point(0.5, 1),
+            GradientStops =
+            {
+                new GradientStop(Color.FromArgb(0x59, 0xFF, 0xFF, 0xFF), 0),
+                new GradientStop(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF), 0.5),
+                new GradientStop(Color.FromArgb(0x40, 0x00, 0x00, 0x00), 1),
+            },
+        };
+        b.Freeze();
+        return b;
+    }
+
+    /// <summary>Иконка из конфига (fallback — путь действия) либо буква в чипе.</summary>
+    private FrameworkElement BuildIconContent(MenuItemVm item, double iconSize)
+    {
+        var source = IconCache.Get(item.Config.Icon)
+            ?? IconCache.Get(item.Config.Action?.Path);
+        if (source is not null)
+        {
+            var img = new Image
+            {
+                Source = source,
+                Width = iconSize,
+                Height = iconSize,
+                Stretch = Stretch.Uniform,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Effect = new DropShadowEffect
+                {
+                    Color = Colors.Black,
+                    BlurRadius = 4,
+                    ShadowDepth = 1,
+                    Opacity = 0.4,
+                },
+            };
+            return img;
+        }
+
+        var letter = new TextBlock
+        {
+            Text = FirstLetter(item.Config.Label),
+            FontSize = iconSize + 4,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = _text,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        letter.SetValue(TextBlock.RenderTransformOriginProperty, new Point(0.5, 0.5));
+        return letter;
     }
 
     // ---------- Hit testing (with hysteresis) ----------
@@ -1095,6 +1173,13 @@ internal sealed class RadialMenuRenderer
         if (petal.Label is not null) petal.Label.Foreground = fg;
         if (petal.Letter is not null) petal.Letter.Foreground = fg;
         if (petal.Marker is not null) petal.Marker.Foreground = on ? Brushes.White : _textDim;
+
+        // стеклянный чип: рамка → акцент, тень → свечение
+        if (petal.Chip is not null)
+        {
+            petal.Chip.BorderBrush = on ? _hoverStroke : BuildGlassStroke();
+            if (petal.ChipShadow is not null) TuneShadow(petal.ChipShadow, on);
+        }
     }
 
     /// <summary>Тень → акцентное свечение вокруг лепестка при наведении.</summary>

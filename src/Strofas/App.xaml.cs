@@ -67,7 +67,7 @@ public partial class App : Application
         else _menu.ShowMenu();
     }
 
-    private void OpenEditor()
+    public void OpenEditor()
     {
         if (_editor is { IsVisible: true })
         {

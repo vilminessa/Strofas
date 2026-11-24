@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using Microsoft.Win32;
 using Strofas.Core;
 using Strofas.Menu;
@@ -152,6 +153,18 @@ public sealed partial class EditorWindow : Window
         it.Label = LabelBox.Text;
         it.Icon = NullIfEmpty(IconBox.Text);
 
+        // путь указан, а подпись пустая/заглушка — подтягиваем имя файла
+        if (ReferenceEquals(sender, PathBox))
+        {
+            var placeholder = string.IsNullOrWhiteSpace(it.Label) || it.Label == "Новый пункт";
+            var name = NameFromPath(PathBox.Text);
+            if (placeholder && name is not null)
+            {
+                it.Label = name;
+                LabelBox.Text = name;
+            }
+        }
+
         var type = (ActionTypeBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
         if (string.IsNullOrEmpty(type))
         {
@@ -226,7 +239,128 @@ public sealed partial class EditorWindow : Window
         }
     }
 
+    // ---------- Drag & drop файлов из проводника ----------
+
+    private void OnFilesDragOver(object sender, DragEventArgs e)
+    {
+        var ok = e.Data.GetDataPresent(DataFormats.FileDrop)
+                 && e.Data.GetData(DataFormats.FileDrop) is string[] { Length: > 0 };
+        e.Effects = ok ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    /// <summary>Перетащили файлы — создаём пункты: имя из файла, путь, иконка автоматически.</summary>
+    private void OnFilesDrop(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetData(DataFormats.FileDrop) is not string[] files || files.Length == 0) return;
+
+        // куда вставлять: выбранная категория, иначе корень (как «+ Пункт»)
+        var list = _selected is { IsCategory: true } ? _selected.Children! : _working.Items;
+        MenuItemConfig? last = null;
+        foreach (var path in files)
+        {
+            var item = ItemFromFile(path);
+            if (item is null) continue;
+            list.Add(item);
+            last = item;
+        }
+        if (last is null)
+        {
+            StatusText.Text = "Нет файлов для добавления";
+            e.Handled = true;
+            return;
+        }
+
+        RebuildTree(last);
+        RefreshPreview();
+        StatusText.Text = files.Length == 1
+            ? $"Добавлено: {last.Label} (не забудьте «Сохранить»)"
+            : $"Добавлено пунктов: {files.Length} (не забудьте «Сохранить»)";
+        e.Handled = true;
+    }
+
+    /// <summary>Пункт из перетащенного файла: ярлык разрешается до цели, exe/dll/файл/папка.</summary>
+    private static MenuItemConfig? ItemFromFile(string path)
+    {
+        try
+        {
+            if (System.IO.File.Exists(path))
+            {
+                // ярлык .lnk — берём цель, чтобы получить иконку и имя реальной программы
+                if (path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+                {
+                    var target = ResolveShortcut(path);
+                    if (target is not null) path = target;
+                }
+
+                var name = System.IO.Path.GetFileNameWithoutExtension(path);
+                if (string.IsNullOrWhiteSpace(name)) name = path;
+
+                return new MenuItemConfig
+                {
+                    Label = name,
+                    Action = new ActionConfig { Type = "launch", Path = path },
+                };
+            }
+
+            if (System.IO.Directory.Exists(path))
+            {
+                return new MenuItemConfig
+                {
+                    Label = new System.IO.DirectoryInfo(path).Name,
+                    Action = new ActionConfig { Type = "launch", Path = path },
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Drop: {ex.Message}");
+        }
+        return null;
+    }
+
+    /// <summary>Цель ярлыка .lnk через WScript.Shell; null — не разрешился.</summary>
+    private static string? ResolveShortcut(string lnk)
+    {
+        try
+        {
+            var t = Type.GetTypeFromProgID("WScript.Shell");
+            if (t is null) return null;
+            var shell = Activator.CreateInstance(t);
+            if (shell is null) return null;
+            var shortcut = t.InvokeMember("CreateShortcut",
+                System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { lnk });
+            var target = shortcut?.GetType().InvokeMember("TargetPath",
+                System.Reflection.BindingFlags.GetProperty, null, shortcut, null) as string;
+            System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shell);
+            return string.IsNullOrWhiteSpace(target) ? null : target;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static string? NullIfEmpty(string s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    /// <summary>Имя файла без расширения из строки пути; не-файловые пути (URL и т.п.) → null.</summary>
+    private static string? NameFromPath(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var p = raw.Trim();
+        if (p.Contains("://") || p.StartsWith("shell:", StringComparison.OrdinalIgnoreCase))
+            return null;
+        try
+        {
+            var name = System.IO.Path.GetFileNameWithoutExtension(p);
+            return string.IsNullOrWhiteSpace(name) ? null : name;
+        }
+        catch (ArgumentException)
+        {
+            return null; // недопустимые символы в пути
+        }
+    }
+
 
     // ---------- Структурные операции ----------
 
@@ -267,6 +401,217 @@ public sealed partial class EditorWindow : Window
 
     private void OnMoveUp(object sender, RoutedEventArgs e) => Move(-1);
     private void OnMoveDown(object sender, RoutedEventArgs e) => Move(+1);
+
+    // ---------- Drag & drop узлов в дереве ----------
+
+    private MenuItemConfig? _dragItem;
+    private Point _pressPoint;
+    private TreeViewItem? _dropHintTarget;
+    private bool _dropHintInto;
+
+    private void OnTreeMouseLeftDown(object sender, MouseButtonEventArgs e)
+        => _pressPoint = e.GetPosition(Tree);
+
+    private void OnTreeMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || _dragItem is not null) return;
+        var p = e.GetPosition(Tree);
+        if (Math.Abs(p.X - _pressPoint.X) < SystemParameters.MinimumHorizontalDragDistance
+            && Math.Abs(p.Y - _pressPoint.Y) < SystemParameters.MinimumHorizontalDragDistance)
+            return;
+
+        var container = ContainerAt(p);
+        if (container?.Tag is not MenuItemConfig item) return;
+
+        _dragItem = item;
+        try
+        {
+            DragDrop.DoDragDrop(Tree, new DataObject("StrofasItem", item.Label), DragDropEffects.Move);
+        }
+        finally
+        {
+            _dragItem = null;
+            ClearDropHint();
+        }
+    }
+
+    private TreeViewItem? ContainerAt(Point p)
+    {
+        var hit = VisualTreeHelper.HitTest(Tree, p)?.VisualHit;
+        return hit is null ? null : ItemsControl.ContainerFromElement(Tree, hit) as TreeViewItem;
+    }
+
+    private void OnTreeDragOver(object sender, DragEventArgs e)
+    {
+        if (_dragItem is null)
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        var p = e.GetPosition(Tree);
+        var container = ContainerAt(p);
+        if (container?.Tag is not MenuItemConfig target)
+        {
+            // пустое место под деревом — в конец корня
+            SetDropHint(null, false);
+            e.Effects = DragDropEffects.Move;
+            e.Handled = true;
+            return;
+        }
+        if (!CanDropInto(_dragItem, target))
+        {
+            ClearDropHint();
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        // зоны: категория — середина = «внутрь», края = перед/после; пункт — верх/низ
+        var rel = p.Y / Math.Max(1, container.ActualHeight);
+        var into = target.IsCategory && rel is >= 0.25 and <= 0.75;
+        SetDropHint(container, into);
+        e.Effects = DragDropEffects.Move;
+        e.Handled = true;
+    }
+
+    private void OnTreeDragLeave(object sender, DragEventArgs e)
+    {
+        // DragLeave дёргается и при попадании на дочерние визуалы — подсветку
+        // сбрасываем только когда курсор реально ушёл с области Tree
+        if (!Tree.IsMouseOver) ClearDropHint();
+    }
+
+    private void OnTreeDrop(object sender, DragEventArgs e)
+    {
+        var item = _dragItem;
+        if (item is null) { ClearDropHint(); return; }
+
+        var p = e.GetPosition(Tree);
+        var container = ContainerAt(p);
+        _lastDropPoint = p;
+
+        if (container?.Tag is MenuItemConfig target && !ReferenceEquals(target, item))
+        {
+            if (!CanDropInto(item, target)) { ClearDropHint(); return; }
+
+            var rel = p.Y / Math.Max(1, container.ActualHeight);
+            var into = target.IsCategory && rel is >= 0.25 and <= 0.75;
+            if (!Move(item, target, into)) { ClearDropHint(); return; }
+        }
+        else if (container is null)
+        {
+            // пустое место — в конец корня
+            if (!Find(_working.Items, item, out var srcParent, out var srcIndex)) { ClearDropHint(); return; }
+            srcParent.RemoveAt(srcIndex);
+            _working.Items.Add(item);
+        }
+        else
+        {
+            ClearDropHint();
+            return;
+        }
+
+        _dragItem = null;
+        ClearDropHint();
+        RebuildTree(item);
+        RefreshPreview();
+        StatusText.Text = $"Перемещено: {item.Label} (не забудьте «Сохранить»)";
+        e.Handled = true;
+    }
+
+    /// <summary>Перемещение item в цель: into=true — в конец категории, иначе до/после по половине узла.</summary>
+    private bool Move(MenuItemConfig item, MenuItemConfig target, bool into)
+    {
+        if (!Find(_working.Items, item, out var srcParent, out var srcIndex)) return false;
+
+        if (into)
+        {
+            if (!target.IsCategory) return false;
+            srcParent.RemoveAt(srcIndex);
+            target.Children!.Add(item);
+            return true;
+        }
+
+        // позиция цели до удаления источника; если списки одинаковые и источник раньше — сдвигаем
+        if (!Find(_working.Items, target, out var dstParent, out var dstIndex)) return false;
+        var sameList = ReferenceEquals(srcParent, dstParent);
+        srcParent.RemoveAt(srcIndex);
+        if (sameList && srcIndex < dstIndex) dstIndex--;
+        // dstIndex — индекс цели; offset 0 = перед ней, 1 = после
+        dstIndex = Math.Clamp(dstIndex + OffsetFromPoint(target), 0, dstParent.Count);
+        dstParent.Insert(dstIndex, item);
+        return true;
+    }
+
+    /// <summary>0 — верхняя половина целевого узла (вставить перед), 1 — нижняя (после).</summary>
+    private int OffsetFromPoint(MenuItemConfig target)
+    {
+        var container = ContainerFromItem(target);
+        if (container is null) return 1;
+        var rel = _lastDropPoint.Y / Math.Max(1, container.ActualHeight);
+        return rel < 0.5 ? 0 : 1;
+    }
+
+    private Point _lastDropPoint;
+
+    private TreeViewItem? ContainerFromItem(MenuItemConfig item)
+    {
+        foreach (var root in Tree.Items)
+        {
+            if (root is TreeViewItem node && TryFindNode(node, item, out var found)) return found;
+        }
+        return null;
+    }
+
+    private static bool TryFindNode(TreeViewItem node, MenuItemConfig target, out TreeViewItem found)
+    {
+        if (ReferenceEquals(node.Tag, target)) { found = node; return true; }
+        foreach (var child in node.Items)
+        {
+            if (child is TreeViewItem c && TryFindNode(c, target, out found)) return true;
+        }
+        found = null!;
+        return false;
+    }
+
+    /// <summary>Куда нельзя дропать: в самого себя и в собственных потомков.</summary>
+    private static bool CanDropInto(MenuItemConfig drag, MenuItemConfig target)
+        => !Contains(drag, target);
+
+    private static bool Contains(MenuItemConfig root, MenuItemConfig? target)
+    {
+        if (target is null) return false;
+        if (ReferenceEquals(root, target)) return true;
+        if (root.Children is null) return false;
+        return root.Children.Any(c => Contains(c, target));
+    }
+
+    private void SetDropHint(TreeViewItem? container, bool into)
+    {
+        if (ReferenceEquals(_dropHintTarget, container) && _dropHintInto == into) return;
+        ClearDropHint();
+        _dropHintTarget = container;
+        _dropHintInto = into;
+        if (container is null) return;
+        if (container.Template.FindName("item", container) is System.Windows.Controls.Border bd)
+        {
+            bd.Background = into
+                ? new SolidColorBrush(Color.FromArgb(0x66, 0x7C, 0x9B, 0xFF))
+                : new SolidColorBrush(Color.FromArgb(0x33, 0x7C, 0x9B, 0xFF));
+        }
+    }
+
+    private void ClearDropHint()
+    {
+        if (_dropHintTarget is not null
+            && _dropHintTarget.Template.FindName("item", _dropHintTarget) is System.Windows.Controls.Border bd)
+        {
+            bd.Background = Brushes.Transparent;
+        }
+        _dropHintTarget = null;
+    }
 
     private void Move(int delta)
     {

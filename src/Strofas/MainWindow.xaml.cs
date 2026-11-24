@@ -1,4 +1,8 @@
-﻿using System.Windows;
+using System.Diagnostics;
+using System.IO;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -284,6 +288,8 @@ public sealed partial class MainWindow : Window
         RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.92, dur) { EasingFunction = ease });
         RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.92, dur) { EasingFunction = ease });
         RootRotate.BeginAnimation(RotateTransform.AngleProperty, new DoubleAnimation(3, dur) { EasingFunction = ease });
+        if (Native.IsAnimationEnabled())
+            RootSkew.BeginAnimation(SkewTransform.AngleXProperty, new DoubleAnimation(14, dur) { EasingFunction = ease });
     }
 
     private void StopWindowAnimations()
@@ -292,25 +298,62 @@ public sealed partial class MainWindow : Window
         RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
         RootRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+        RootSkew.BeginAnimation(SkewTransform.AngleXProperty, null);
         Root.Opacity = 1;
         RootScale.ScaleX = RootScale.ScaleY = 1;
         RootRotate.Angle = 0;
+        RootSkew.AngleX = 0;
     }
 
     private void AnimateOpen()
     {
         StopWindowAnimations();
+        var motion = Native.IsAnimationEnabled();
         var ease = new QuadraticEase { EasingMode = EasingMode.EaseOut };
         var dur = new Duration(TimeSpan.FromMilliseconds(160));
 
         RootScale.ScaleX = RootScale.ScaleY = 0.85;
         RootRotate.Angle = -6;
+        RootSkew.AngleX = motion ? -16 : 0;
         Root.Opacity = 0;
 
         Root.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(1, dur) { EasingFunction = ease });
         RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1, dur) { EasingFunction = ease });
-        RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1, dur) { EasingFunction = ease });
+        RootScale.BeginAnimation(ScaleTransform.ScaleYProperty,
+            new DoubleAnimation(1, new Duration(TimeSpan.FromMilliseconds(motion ? 200 : 160))) { EasingFunction = ease });
         RootRotate.BeginAnimation(RotateTransform.AngleProperty, new DoubleAnimation(0, dur) { EasingFunction = ease });
+        if (motion)
+        {
+            // «разворот из наклона»: коллапс по Y + скос, оба расходятся к нулю
+            RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1, new Duration(TimeSpan.FromMilliseconds(200)))
+            {
+                From = 0.62,
+                EasingFunction = ease,
+            });
+            RootSkew.BeginAnimation(SkewTransform.AngleXProperty, new DoubleAnimation(0, new Duration(TimeSpan.FromMilliseconds(220)))
+            {
+                EasingFunction = new BackEase { Amplitude = 0.5, EasingMode = EasingMode.EaseOut },
+            });
+        }
+    }
+
+    /// <summary>Кик перспективы при погружении в категорию (dir +1) и возврате (dir -1).</summary>
+    private void PulseDive(int dir)
+    {
+        if (!Native.IsAnimationEnabled()) return;
+        // наклон имитируется SkewX (поворот вокруг Y) + кик ScaleY (наклон к зрителю)
+        RootSkew.BeginAnimation(SkewTransform.AngleXProperty,
+            new DoubleAnimation(dir * 12, new Duration(TimeSpan.FromMilliseconds(90)))
+            {
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                AutoReverse = true,
+            });
+        RootScale.BeginAnimation(ScaleTransform.ScaleYProperty,
+            new DoubleAnimation(0.88, new Duration(TimeSpan.FromMilliseconds(90)))
+            {
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                AutoReverse = true,
+            });
     }
 
     private void PositionAtCursor()
@@ -420,6 +463,7 @@ public sealed partial class MainWindow : Window
 
     private string CenterMain(in MenuHit hit)
     {
+        if (_rootItems.Count == 0) return "Пусто";
         if (hit.Zone == PressZone.Update) return "Обновить";
         var item = HitItem(hit);
         return item is null ? "Strofas" : item.Config.Label;
@@ -428,12 +472,17 @@ public sealed partial class MainWindow : Window
     /// <summary>Статус github-пункта — акцентный pill; иначе — breadcrumb пути.</summary>
     private (string? Text, bool Accent) CrumbFor(in MenuHit hit)
     {
+        if (_rootItems.Count == 0) return ("пунктов пока нет", true);
         var status = _github.GetStatusText(HitItem(hit)?.Config, hit.Zone);
         if (status is not null) return (status, true);
         return (Breadcrumb(), false);
     }
 
-    private string CenterHint() => _chain.Count > 0 ? "Назад" : "Закрыть";
+    private string CenterHint()
+    {
+        if (_rootItems.Count == 0) return "Открыть редактор";
+        return _chain.Count > 0 ? "Назад" : "Закрыть";
+    }
 
     private string? Breadcrumb()
     {
@@ -471,6 +520,8 @@ public sealed partial class MainWindow : Window
     private void OnLeftClick(object sender, MouseButtonEventArgs e)
     {
         if (!IsVisible) return;
+        // при открытом контекст-меню первый клик по лепестку только закрывает его
+        if (_ctxOpen) { e.Handled = true; return; }
         var hit = _renderer.HitTest(e.GetPosition(this));
         _renderer.PressPetal(hit);
         ActivateHit(hit);
@@ -482,7 +533,12 @@ public sealed partial class MainWindow : Window
         switch (hit.Kind)
         {
             case HitKind.Center:
-                if (_chain.Count > 0) GoBack();
+                if (_rootItems.Count == 0)
+                {
+                    HideMenu();
+                    (Application.Current as App)?.OpenEditor();
+                }
+                else if (_chain.Count > 0) GoBack();
                 else HideMenu();
                 break;
 
@@ -523,6 +579,7 @@ public sealed partial class MainWindow : Window
         _chain.Add(item);
         _selection = -1;
         _renderer.SetInner(InnerItems());
+        PulseDive(+1);
         UpdateFromPointer();
     }
 
@@ -538,6 +595,7 @@ public sealed partial class MainWindow : Window
         _chain.Add(item);
         _selection = -1;
         _renderer.SetInner(InnerItems());
+        PulseDive(+1);
         UpdateFromPointer();
     }
 
@@ -547,16 +605,143 @@ public sealed partial class MainWindow : Window
         _chain.RemoveAt(_chain.Count - 1);
         _selection = -1;
         _renderer.SetInner(InnerItems());
+        PulseDive(-1);
         UpdateFromPointer();
     }
 
     private void OnRightClick(object sender, MouseButtonEventArgs e)
     {
         if (!IsVisible) return;
+
+        // повторный ПКМ при открытом меню — просто закрыть его
+        if (_ctxOpen) { e.Handled = true; return; }
+
+        // ПКМ по лепестку — контекстные действия; по пустоте/центру — назад/закрыть
+        var hit = _renderer.HitTest(e.GetPosition(this));
+        if (hit.Kind is HitKind.Outer or HitKind.Inner)
+        {
+            var item = HitItem(hit);
+            if (item is not null)
+            {
+                ShowPetalContext(item);
+                e.Handled = true;
+                return;
+            }
+        }
+
         if (_chain.Count > 0) GoBack();
         else HideMenu();
         e.Handled = true;
     }
+
+    /// <summary>Контекстные действия лепестка: папка, от администратора, копировать, редактор.</summary>
+    private void ShowPetalContext(MenuItemVm vm)
+    {
+        var cfg = vm.Config;
+        var action = cfg.Action;
+        var path = action?.Path;
+
+        var menu = new ContextMenu
+        {
+            Style = (Style)FindResource("PetalContext"),
+            Placement = PlacementMode.MousePoint,
+            StaysOpen = false,
+        };
+        MenuItem Mi(string header, Action onClick)
+        {
+            var mi = new MenuItem
+            {
+                Header = header,
+                Style = (Style)FindResource("PetalContextItem"),
+            };
+            mi.Click += (_, _) => onClick();
+            menu.Items.Add(mi);
+            return mi;
+        }
+
+        var expanded = string.IsNullOrWhiteSpace(path)
+            ? null
+            : Environment.ExpandEnvironmentVariables(path.Trim());
+        var isUrl = expanded is not null
+            && (expanded.Contains("://") || expanded.StartsWith("shell:"));
+
+        // «Открыть папку» — только для реальных файлов/папок
+        if (expanded is not null && !isUrl && (File.Exists(expanded) || Directory.Exists(expanded)))
+        {
+            Mi("Открыть папку", () =>
+            {
+                HideMenu();
+                if (Directory.Exists(expanded))
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"\"{expanded}\"")
+                    { UseShellExecute = true });
+                else
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{expanded}\"")
+                    { UseShellExecute = true });
+            });
+        }
+
+        // Запуск от имени администратора — только launch-подобные с путём
+        if (expanded is not null && action is { Type: "launch" or "toggle" } && !isUrl)
+        {
+            Mi("Запуск от имени администратора", () =>
+            {
+                HideMenu();
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = expanded,
+                        Arguments = action.Args ?? "",
+                        WorkingDirectory = string.IsNullOrWhiteSpace(action.WorkingDir)
+                            ? ""
+                            : Environment.ExpandEnvironmentVariables(action.WorkingDir),
+                        UseShellExecute = true,
+                        Verb = "runas",
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn($"Запуск от администратора: {ex.Message}");
+                }
+            });
+        }
+
+        // Копировать путь/ссылку
+        var copyText = !string.IsNullOrWhiteSpace(expanded) ? expanded
+            : !string.IsNullOrWhiteSpace(action?.Repo) ? action.Repo
+            : null;
+        if (copyText is not null)
+        {
+            Mi("Копировать путь", () =>
+            {
+                try
+                {
+                    Clipboard.SetText(copyText);
+                    StatusHint("Скопировано: " + copyText);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn($"Буфер обмена: {ex.Message}");
+                }
+            });
+        }
+
+        if (menu.Items.Count > 0) menu.Items.Add(new Separator());
+        Mi("Редактировать в редакторе", () =>
+        {
+            HideMenu();
+            (Application.Current as App)?.OpenEditor();
+        });
+
+        menu.Closed += (_, _) => _ctxOpen = false;
+        _ctxOpen = true;
+        menu.IsOpen = true;
+    }
+
+    private bool _ctxOpen;
+
+    /// <summary>Короткое сообщение в статус-строке хаба (hint меняется при hover — используем лог).</summary>
+    private void StatusHint(string text) => Log.Info(text);
 
     private void OnMouseWheel(object sender, MouseWheelEventArgs e)
     {

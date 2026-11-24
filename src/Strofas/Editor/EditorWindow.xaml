@@ -7,7 +7,10 @@
         MinWidth="900"
         MinHeight="560"
         WindowStartupLocation="CenterScreen"
-        Background="#FF1E1E26">
+        Background="#FF1E1E26"
+        AllowDrop="True"
+        Drop="OnFilesDrop"
+        DragOver="OnFilesDragOver">
     <Window.Resources>
         <!-- ===== v3: тёмные стили редактора в стиле меню ===== -->
         <SolidColorBrush x:Key="SurfaceBrush" Color="#FF26262F" />
@@ -320,7 +323,13 @@
                     <TextBlock DockPanel.Dock="Top" Text="Структура меню" FontWeight="SemiBold"
                                Foreground="#FFB8B8C8" Margin="4,2,4,6" />
                     <TreeView x:Name="Tree" Background="Transparent" BorderThickness="0"
-                              Foreground="#FFE8E8F0" SelectedItemChanged="OnTreeSelected">
+                              Foreground="#FFE8E8F0" SelectedItemChanged="OnTreeSelected"
+                              AllowDrop="True"
+                              MouseLeftButtonDown="OnTreeMouseLeftDown"
+                              PreviewMouseMove="OnTreeMouseMove"
+                              DragOver="OnTreeDragOver"
+                              DragLeave="OnTreeDragLeave"
+                              Drop="OnTreeDrop">
                         <TreeView.ItemContainerStyle>
                             <Style TargetType="TreeViewItem">
                                 <Setter Property="Foreground" Value="#FFE8E8F0" />

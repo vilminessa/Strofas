@@ -13,12 +13,71 @@
         Height="640"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True">
+    <Window.Resources>
+        <!-- Контекст-меню лепестка (ПКМ): тёмное стекло в стиле v3 -->
+        <Style x:Key="PetalContext" TargetType="ContextMenu">
+            <Setter Property="Background" Value="#F2191920" />
+            <Setter Property="Foreground" Value="#FFE8E8F0" />
+            <Setter Property="BorderBrush" Value="#FF4A4A5C" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Padding" Value="4" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ContextMenu">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="10"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <Border.Effect>
+                                <DropShadowEffect Color="#000000" BlurRadius="18"
+                                                  ShadowDepth="4" Opacity="0.5" />
+                            </Border.Effect>
+                            <StackPanel IsItemsHost="True"
+                                        KeyboardNavigation.DirectionalNavigation="Cycle" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PetalContextItem" TargetType="MenuItem">
+            <Setter Property="Foreground" Value="#FFE8E8F0" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="MenuItem">
+                        <Border x:Name="bd" Background="Transparent" CornerRadius="6"
+                                Padding="12,7" SnapsToDevicePixels="True">
+                            <ContentPresenter ContentSource="Header"
+                                              HorizontalAlignment="Left"
+                                              VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#337C9BFF" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
     <!-- AllowsTransparency=True (layered) обязателен: только layered-окно отдаёт
          альфу наружу — через него виден Acrylic-бэкдроп. Форму карточки задаёт
          SetWindowRgn (скруглённый прямоугольник), лепестки рисуются поверх. -->
     <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5" Opacity="1">
         <Grid.RenderTransform>
             <TransformGroup>
+                <!-- псевдо-перспектива: Skew имитирует поворот вокруг Y,
+                     ScaleY — наклон к зрителю (PlaneProjection нет в .NET 10 WPF) -->
+                <SkewTransform x:Name="RootSkew" AngleX="0" AngleY="0" />
                 <ScaleTransform x:Name="RootScale" ScaleX="1" ScaleY="1" />
                 <RotateTransform x:Name="RootRotate" Angle="0" />
             </TransformGroup>
